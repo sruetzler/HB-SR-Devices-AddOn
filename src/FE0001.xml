@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<Device>
+  <SupportedTypes>
+    <Type>
+      <Id>FE0001</Id>
+      <Name>HydraulicBalancingThermostat</Name>
+      <Description>Device for performing hydraulic balancing on a heating thermostat</Description>
+    </Type>
+  </SupportedTypes>
+  <Channels>
+    <Channel>
+      <Number>1</Number>
+      <Type>CONFIG_CHANNEL</Type>
+      <Direction>INPUT_OUTPUT</Direction>
+      <Parameters>
+        <Parameter>
+          <Id>ENABLE</Id>
+          <Type>BOOL</Type>
+          <Operations>read,write</Operations>
+          <Default>1</Default>
+        </Parameter>
+        <Parameter>
+          <Id>LEARN</Id>
+          <Type>BOOL</Type>
+          <Operations>read,write</Operations>
+          <Default>0</Default>
+        </Parameter>
+        <Parameter>
+          <Id>NEWFACTOR</Id>
+          <Type>INTEGER</Type>
+          <Operations>read,write</Operations>
+          <Min>0</Min>
+          <Max>255</Max>
+          <Default>0</Default>
+        </Parameter>
+        <Parameter>
+          <Id>ACTFACTOR</Id>
+          <Type>INTEGER</Type>
+          <Operations>read,write</Operations>
+          <Min>0</Min>
+          <Max>255</Max>
+          <Default>0</Default>
+        </Parameter>
+      </Parameters>
+      <Peerings>
+        <Peering>
+          <Direction>INPUT</Direction>
+        </Peering>
+        <Peering>
+          <Direction>OUTPUT</Direction>
+        </Peering>
+      </Peerings>
+    </Channel>
+  </Channels>
+</Device>
