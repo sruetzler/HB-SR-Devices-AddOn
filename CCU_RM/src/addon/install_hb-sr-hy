@@ -4,7 +4,7 @@
 # in der WebUI angezeigter Gerätetyp, muss identisch sein mit dem Firmware-XML-Tag: <id="HB-Sec-WDS-2">
 DEVICE="HB-SR-HY"
 # in der WebUI angezeigte Gerätebeschreibung
-DEVICE_DESC="Hydraulische Abgleich"
+DEVICE_DESC="Hydraulischer Abgleich"
 # Name der Piktogramme, bestehend aus xx.png bzw. xx_thumb.png
 DEVICE_IMG=hb-sr-hy.png
 DEVICE_THUMB=hb-sr-hy_thumb.png
