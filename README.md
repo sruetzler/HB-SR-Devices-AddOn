@@ -15,7 +15,6 @@ This addon is based on https://github.com/TomMajor/SmartHome/tree/master/HB-TM-D
 | Sensor | Device Model |
 |---|---|
 | HB-SR-HY        | 0xF103 |
-| HB-UNI-Sensor2        | 0xFE01 |
 
 
 ## Change Log
