@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<device version="5" rx_modes="CONFIG,WAKEUP" cyclic_timeout="88700">
+  <supported_types>
+    <type name="HB-SR-HY" id="HB-SR-HY" updatable="true">
+      <parameter index="10.0" size="2.0" const_value="0xFE01"/>
+    </type>
+  </supported_types>
+  <paramset type="MASTER" id="dev_master">
+    <parameter id="INTERNAL_KEYS_VISIBLE">
+      <logical type="boolean" default="false"/>
+      <physical type="integer" interface="config" list="0" index="2" size="1.0"/>
+    </parameter>
+    <parameter id="LOCAL_RESET_DISABLE">
+      <logical type="boolean" default="false"/>
+      <physical type="integer" interface="config" list="0" index="24" size="1.0"/>
+    </parameter>
+    <parameter id="LOWBAT_LIMIT">
+      <logical type="float" min="1.0" max="5.0" default="2.2" unit="V"/>
+      <physical type="integer" interface="config" list="0" index="18" size="1.0"/>
+      <conversion type="float_integer_scale" factor="10"/>
+    </parameter>
+  </paramset>
+  <channels>
+    <channel index="0" type="MAINTENANCE" ui_flags="internal" class="maintenance" count="1">
+      <paramset type="MASTER" id="maint_ch_master"/>
+      <paramset type="VALUES" id="maint_ch_values">
+        <parameter id="UNREACH" operations="read,event" ui_flags="service">
+          <logical type="boolean"/>
+          <physical type="integer" interface="internal" value_id="UNREACH"/>
+        </parameter>
+        <parameter id="STICKY_UNREACH" operations="read,write,event" ui_flags="service,sticky">
+          <logical type="boolean"/>
+          <physical type="integer" interface="internal" value_id="STICKY_UNREACH"/>
+        </parameter>
+        <parameter id="CONFIG_PENDING" operations="read,event" ui_flags="service">
+          <logical type="boolean"/>
+          <physical type="integer" interface="internal" value_id="CONFIG_PENDING"/>
+        </parameter>
+        <parameter id="LOWBAT" operations="read,event" ui_flags="service">
+          <logical type="boolean"/>
+          <physical type="integer" interface="internal" value_id="LOWBAT"/>
+        </parameter>
+        <parameter id="RSSI_DEVICE" operations="read,event">
+          <logical type="integer"/>
+          <physical type="integer" interface="internal" value_id="RSSI_DEVICE"/>
+        </parameter>
+        <parameter id="RSSI_PEER" operations="read,event">
+          <logical type="integer"/>
+          <physical type="integer" interface="internal" value_id="RSSI_PEER"/>
+        </parameter>
+      </paramset>
+    </channel>
+    
+    <channel index="1" type="CONFIG_CHANNEL" count="1">
+      <paramset type="MASTER" id="config_ch_master">
+        <parameter id="ENABLE">
+          <logical type="boolean" default="true"/>
+          <physical type="integer" interface="config" list="1" index="1" size="1.0"/>
+          <conversion type="boolean_integer"/>
+        </parameter>
+        <parameter id="FACTOR">
+          <logical type="integer" min="0" max="255" default="0" unit=""/>
+          <physical type="integer" interface="config" list="1" index="2" size="1.0"/>
+        </parameter>
+      </paramset>
+      
+      <paramset type="VALUES" id="config_ch_values">
+        <parameter id="STATE" operations="read,event">
+          <logical type="boolean" default="false"/>
+          <physical type="integer" interface="command" value_id="STATE">
+            <event frame="INFO_LEVEL"/>
+          </physical>
+        </parameter>
+      </paramset>
+      
+      <paramset type="LINK" id="config_ch_link">
+        <parameter id="PEER_NEEDS_BURST">
+          <logical type="boolean" default="false"/>
+          <physical type="integer" interface="config" list="4" index="1.0" size="0.1"/>
+        </parameter>
+        <parameter id="EXPECT_AES">
+          <logical type="boolean" default="false"/>
+          <physical type="integer" interface="config" list="4" index="1.7" size="0.1"/>
+        </parameter>
+      </paramset>
+    </channel>
+  </channels>
+  <frames>
+    <frame id="INFO_LEVEL" direction="from_device" allowed_receivers="BROADCAST,CENTRAL,OTHER" event="true" type="0x10" channel_field="9:0.6">
+      <parameter type="integer" index="10.0" size="1.0" param="STATE"/>
+    </frame>
+  </frames>
+  
+  <paramset_defs/>
+</device>

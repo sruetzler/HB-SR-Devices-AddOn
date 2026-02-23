@@ -1,0 +1,20 @@
+#!/bin/sh
+
+ADDON_NAME=hb-sr-hy
+CONFIG_DIR=/usr/local/etc/config
+FIRMWARE_DIR=$CONFIG_DIR/firmware/rftypes
+
+if [ "$1" = "HM-RASPBERRYMATIC" ] || [ "$1" = "HM-CCU3" ]; then
+    mount -o remount,rw /
+    
+    # Gerätedefinition kopieren
+    cp -af firmware/rftypes/* $FIRMWARE_DIR/
+    
+    # Rechte setzen
+    chmod 644 $FIRMWARE_DIR/hb-sr-hy.xml
+    
+    # ReGaHss neu starten
+    /etc/init.d/S61rfd restart
+    
+    mount -o remount,ro /
+fi

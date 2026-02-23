@@ -38,8 +38,8 @@ using namespace as;
 
 // define all device properties
 const struct DeviceInfo PROGMEM devinfo = {
-    {0x01,0x99,0x01},       // Device ID
-    "SRUE00001",          // Device Serial
+    {0xfe,0x01,0x01},       // Device ID
+    "SRUE000001",          // Device Serial
     {0xfe,0x01},            // Device Model
     0x11,                   // Firmware Version
     0xfe,                   // Device Type: Thermostat (oder eigenen Wert)
@@ -62,38 +62,43 @@ public:
   }
 };
 
-
-// Zusätzliche Register-IDs für Konfigurationsdaten
-
-#define REG_ENABLE     0x20
-#define REG_LEARN      0x21
-#define REG_NEWFACTOR  0x22
-#define REG_ACTFACTOR  0x23
-
-
-
-// Minimal-Channel mit nur Konfigurationsdatenpunkten und Peer-Event-Handling
-class ConfigChannel : public SwitchChannel<Hal,PEERS_PER_CHANNEL,SwList0> {
+// Register für Channel 1 (List1)
+DEFREGISTER(Reg1,0x01,0x02)
+class SwList1 : public RegList1<Reg1> {
 public:
-  typedef SwitchChannel<Hal,PEERS_PER_CHANNEL,SwList0> BaseChannel;
-  ConfigChannel () {}
-  virtual ~ConfigChannel () {}
-
-  // Zugriff auf Konfigurationsdatenpunkte
-  bool enable() const { return getList1().getByte(REG_ENABLE) != 0; }
-  void enable(bool v) { getList1().setByte(REG_ENABLE, v ? 1 : 0); }
-  bool learn() const { return getList1().getByte(REG_LEARN) != 0; }
-  void learn(bool v) { getList1().setByte(REG_LEARN, v ? 1 : 0); }
-  uint8_t newFactor() const { return getList1().getByte(REG_NEWFACTOR); }
-  void newFactor(uint8_t v) { getList1().setByte(REG_NEWFACTOR, v); }
-  uint8_t actFactor() const { return getList1().getByte(REG_ACTFACTOR); }
-  void actFactor(uint8_t v) { getList1().setByte(REG_ACTFACTOR, v); }
-
-  // Peer-Event-Handling
-  virtual bool process(const Message& msg) {
-    DPRINTLN(F("Peer-Event empfangen!"));
-    return true;
+  SwList1 (uint16_t addr) : RegList1<Reg1>(addr) {}
+  
+  bool enable () const { return this->readRegister(0x01,0); }
+  bool enable (bool v) const { return this->writeRegister(0x01,v); }
+  
+  uint8_t factor () const { return this->readRegister(0x02,0); }
+  bool factor (uint8_t v) const { return this->writeRegister(0x02,v); }
+  
+  void defaults () {
+    clear();
+    enable(true);
+    factor(0);
   }
+};
+
+// Minimal-Channel mit Konfigurationsdatenpunkten und Peer-Event-Handling
+class ConfigChannel : public Channel<Hal,SwList1,EmptyList,DefList4,PEERS_PER_CHANNEL,SwList0> {
+private:
+  uint8_t m_status;
+  
+public:
+  typedef Channel<Hal,SwList1,EmptyList,DefList4,PEERS_PER_CHANNEL,SwList0> BaseChannel;
+  ConfigChannel () : BaseChannel(), m_status(0) {}
+  virtual ~ConfigChannel () {}
+  
+  uint8_t status () const { return m_status; }
+  uint8_t flags () const { return 0; }
+  
+  void configChanged() {
+    DPRINT(F("ConfigChanged - ENABLE: ")); DPRINTLN(this->getList1().enable());
+    DPRINT(F("ConfigChanged - FACTOR: ")); DPRINTLN(this->getList1().factor());
+  }
+  
 };
 
 // Device mit nur einem Channel
@@ -117,15 +122,10 @@ void setup() {
     sdev.getDeviceID(devid);
     Peer ipeer(devid,1);
     sdev.channel(1).peer(ipeer);
-    // Konfigurationsdatenpunkte initialisieren
-    sdev.channel(1).getList1().setByte(REG_ENABLE, 1);
-    sdev.channel(1).getList1().setByte(REG_LEARN, 0);
-    sdev.channel(1).getList1().setByte(REG_NEWFACTOR, 0);
-    sdev.channel(1).getList1().setByte(REG_ACTFACTOR, 0);
   }
+  sdev.initDone();
   hal.activity.stayAwake(seconds2ticks(15));
   hal.battery.init(seconds2ticks(60UL*60),sysclock);
-  sdev.initDone();
 }
 
 void loop() {
@@ -138,13 +138,12 @@ void loop() {
 
 // Beispiel: Zugriff auf Konfigurationsdatenpunkte im Channel
 void printConfig() {
-  DPRINT(F("enable: ")); DPRINTLN(sdev.channel(1).getList1().getByte(REG_ENABLE));
-  DPRINT(F("learn: ")); DPRINTLN(sdev.channel(1).getList1().getByte(REG_LEARN));
-  DPRINT(F("newFactor: ")); DPRINTLN(sdev.channel(1).getList1().getByte(REG_NEWFACTOR));
-  DPRINT(F("actFactor: ")); DPRINTLN(sdev.channel(1).getList1().getByte(REG_ACTFACTOR));
+  DPRINT(F("enable: ")); DPRINTLN(sdev.channel(1).getList1().enable());
+  DPRINT(F("factor: ")); DPRINTLN(sdev.channel(1).getList1().factor());
 }
 
-// Beispiel: Peer-Ausgang
+// Beispiel: Peer-Ausgang (Status-Info senden)
 void sendPeerStatus() {
-  sdev.sendInfoActuatorStatus(HMID::broadcast, sdev.nextcount(), sdev.channel(1), true);
+  // Beispiel für Status-Broadcast - implementiere basierend auf deinen Anforderungen
+  DPRINTLN(F("Send peer status"));
 }

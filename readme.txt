@@ -1,0 +1,1 @@
+https://github.com/TomMajor/SmartHome/blob/master/HB-TM-Devices-AddOn/README.md
