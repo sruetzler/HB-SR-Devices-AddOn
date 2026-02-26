@@ -33,6 +33,9 @@
 // number of available peers per channel
 #define PEERS_PER_CHANNEL 4
 
+// number of channels (einfach ändern für mehr Channels)
+#define NUM_CHANNELS 1
+
 // all library classes are placed in the namespace 'as'
 using namespace as;
 
@@ -81,15 +84,29 @@ public:
   }
 };
 
+// Link-Register (List4) - für Peer-Speicherung
+DEFREGISTER(Reg4)
+class SwList4 : public RegList4<Reg4> {
+public:
+  SwList4 (uint16_t addr) : RegList4<Reg4>(addr) {}
+  
+  bool peerNeedsBurst () const { return this->readBit(1, 0, false); }
+  bool peerNeedsBurst (bool v) { return this->writeBit(1, 0, v); }
+  
+  void defaults () {
+    clear();
+  }
+};
+
 // Minimal-Channel mit Konfigurationsdatenpunkten und Peer-Event-Handling
-class ConfigChannel : public Channel<Hal,SwList1,EmptyList,DefList4,PEERS_PER_CHANNEL,SwList0> {
+class ConfigChannel : public Channel<Hal,SwList1,EmptyList,SwList4,PEERS_PER_CHANNEL,SwList0> {
 private:
   uint8_t m_status;
   uint8_t m_valvePosition;  // Aktuelle Ventilstellung (0-200 oder 0-100%)
   uint8_t m_error;          // ERROR Status (0=NO_ERROR, 1=VALVE_DRIVE_BLOCKED, 2=VALVE_DRIVE_LOOSE, 3=ADJUSTING_RANGE_TO_SMALL, 4=LOWBAT)
   
 public:
-  typedef Channel<Hal,SwList1,EmptyList,DefList4,PEERS_PER_CHANNEL,SwList0> BaseChannel;
+  typedef Channel<Hal,SwList1,EmptyList,SwList4,PEERS_PER_CHANNEL,SwList0> BaseChannel;
   ConfigChannel () : BaseChannel(), m_status(0), m_valvePosition(0), m_error(0) {}
   virtual ~ConfigChannel () {}
   
@@ -239,47 +256,57 @@ public:
   }*/
 };
 
-// Device mit nur einem Channel
-class ConfigDevice : public MultiChannelDevice<Hal,ConfigChannel,1,SwList0> {
+// Device mit konfigurierbarer Channel-Anzahl
+template <uint8_t ChannelCount>
+class ConfigDeviceType : public MultiChannelDevice<Hal,ConfigChannel,ChannelCount,SwList0> {
 public:
-  typedef MultiChannelDevice<Hal,ConfigChannel,1,SwList0> DevType;
-  ConfigDevice(const DeviceInfo& i, uint16_t addr) : DevType(i,addr) {}
-  virtual ~ConfigDevice() {}
+  typedef MultiChannelDevice<Hal,ConfigChannel,ChannelCount,SwList0> DevType;
+  ConfigDeviceType(const DeviceInfo& i, uint16_t addr) : DevType(i,addr) {}
+  virtual ~ConfigDeviceType() {}
 
   // Device-Level Message Handler
   virtual bool process(Message& msg) {
-    DPRINTLN(F("*** Device process() aufgerufen ***"));
-    DPRINT(F("Type: 0x")); DHEXLN(msg.type());
-    DPRINT(F("Len : ")); DPRINTLN(msg.length());
+    // DPRINTLN(F("*** Device process() aufgerufen ***"));
+    // DPRINT(F("Type: 0x")); DHEXLN(msg.type());
+    // DPRINT(F("Len : ")); DPRINTLN(msg.length());
     
-    // Logge alle Bytes der Nachricht
-    DPRINT(F("Raw: "));
-    for (uint8_t i = 0; i < msg.length(); i++) {
-      uint8_t b = msg.buffer()[i];
-      if (b < 0x10) DPRINT('0');
-      DSERIAL.print(b, HEX);
-      DPRINT(' ');
-    }
-    DPRINTLN(F(""));
+    // // Logge alle Bytes der Nachricht
+    // DPRINT(F("Raw: "));
+    // for (uint8_t i = 0; i < msg.length(); i++) {
+    //   uint8_t b = msg.buffer()[i];
+    //   if (b < 0x10) DPRINT('0');
+    //   DSERIAL.print(b, HEX);
+    //   DPRINT(' ');
+    // }
+    // DPRINTLN(F(""));
     
     // HvacSetpoint (0x58) vom Thermostat
     if (msg.type() == 0x58 && msg.length() >= 11) {
-      DPRINTLN(F("-> HvacSetpoint (0x58) empfangen"));
+      // DPRINTLN(F("-> HvacSetpoint (0x58) empfangen"));
       
-      uint8_t cmd = msg.buffer()[9];
+      // uint8_t cmd = msg.buffer()[9];
       uint8_t rawValue = msg.buffer()[10];
       
-      DPRINT(F("  Command: 0x")); DHEXLN(cmd);
-      DPRINT(F("  Raw Value: ")); DDECLN(rawValue);
-      
       // Conversion: mul="2" in XML -> rawValue / 2 = Prozent
-      uint8_t percent = rawValue / 2;
-      DPRINT(F("  Ventilstellung: ")); DDEC(percent); DPRINTLN(F("%"));
+      // uint8_t percent = rawValue / 2;
       
-      // Leite an Channel 1 weiter
-      channel(1).set(rawValue, 0);
+      // Hole Sender-Adresse aus der Nachricht
+      const HMID& sender = msg.from();
       
-      return true;
+      // DPRINT(F("  Von Sender: "));
+      // DHEX(sender.id0()); DHEX(sender.id1()); DHEX(sender.id2());
+      // DPRINTLN(F(""));
+      
+      // Finde den Channel, der mit diesem Peer verlinkt ist
+      for (uint8_t ch = 1; ch <= ChannelCount; ch++) {
+        uint8_t peerIdx = this->channel(ch).peerfor(sender);
+        if (peerIdx < this->channel(ch).peers()) {
+          // DPRINT(F("  -> Peer gefunden in Channel ")); DDEC(ch);
+          // DPRINT(F(" (Index ")); DDEC(peerIdx); DPRINTLN(F(")"));
+          this->channel(ch).set(rawValue, 0);
+          return true;
+        }
+      }
     }
     
     // Fallback: Standard-Verarbeitung
@@ -287,6 +314,9 @@ public:
   }
 
 };
+
+// Typ-Alias für die konfigurierte Device-Klasse
+typedef ConfigDeviceType<NUM_CHANNELS> ConfigDevice;
 
 Hal hal;
 ConfigDevice sdev(devinfo, 0x20);
@@ -298,11 +328,15 @@ void setup() {
   bool first = sdev.init(hal);
   buttonISR(cfgBtn, CONFIG_BUTTON_PIN);
   if(first) {
-    DPRINTLN(F("Erstes Init - erstelle internen Peer"));
+    DPRINTLN(F("Erstes Init - erstelle interne Peers"));
     HMID devid;
     sdev.getDeviceID(devid);
-    Peer ipeer(devid,1);
-    sdev.channel(1).peer(ipeer);
+    // Erstelle internen Peer für jeden Channel
+    for (uint8_t ch = 1; ch <= NUM_CHANNELS; ch++) {
+      Peer ipeer(devid, ch);
+      sdev.channel(ch).peer(ipeer);
+      DPRINT(F("  Peer für Channel ")); DDEC(ch); DPRINTLN(F(" erstellt"));
+    }
   }
   sdev.initDone();
   DPRINTLN(F("Device bereit - warte auf Links/Nachrichten"));
@@ -315,9 +349,9 @@ void loop() {
   bool poll = sdev.pollRadio();
   // Kein Sleep-Modus für Test - immer empfangsbereit
   // Später für Batteriebetrieb wieder aktivieren:
-  // if( worked == false && poll == false ) {
-  //   hal.activity.savePower<Sleep<> >(hal);
-  // }
+  if( worked == false && poll == false ) {
+    // hal.activity.savePower<Sleep<> >(hal);
+  }
 }
 
 // Beispiel: Zugriff auf Konfigurationsdatenpunkte im Channel

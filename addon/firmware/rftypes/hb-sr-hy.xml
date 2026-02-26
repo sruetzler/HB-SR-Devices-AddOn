@@ -88,7 +88,12 @@
           </physical>
         </parameter>
       </paramset>
-      <paramset type="LINK" id="config_ch_link"/>
+      <paramset type="LINK" id="config_ch_link">
+        <parameter id="PEER_NEEDS_BURST">
+          <logical type="boolean" default="false"/>
+          <physical type="integer" interface="config" list="4" index="1.0" size="0.1"/>
+        </parameter>
+      </paramset>
     </channel>
   </channels>
   <frames>
