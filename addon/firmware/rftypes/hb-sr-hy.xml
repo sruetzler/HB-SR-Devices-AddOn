@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="iso-8859-1"?>
-<device version="5" rx_modes="CONFIG,WAKEUP" cyclic_timeout="88700">
+<device version="5" rx_modes="CONFIG,WAKEUP" cyclic_timeout="3600">
   <supported_types>
     <type name="HB-SR-HY" id="HB-SR-HY" updatable="true">
       <parameter index="10.0" size="2.0" const_value="0xFE01"/>
@@ -51,7 +51,10 @@
       </paramset>
     </channel>
     
-    <channel index="1" type="CONFIG_CHANNEL" count="1">
+    <channel index="1" type="CLIMATECONTROL_VENT_DRIVE">
+      <link_roles>
+        <target name="CLIMATECONTROL_TC"/>
+      </link_roles>
       <paramset type="MASTER" id="config_ch_master">
         <parameter id="ENABLE">
           <logical type="boolean" default="true"/>
@@ -65,29 +68,33 @@
       </paramset>
       
       <paramset type="VALUES" id="config_ch_values">
-        <parameter id="STATE" operations="read,event">
-          <logical type="boolean" default="false"/>
-          <physical type="integer" interface="command" value_id="STATE">
-            <event frame="INFO_LEVEL"/>
+        <parameter id="VALVE_STATE" operations="read,event">
+          <logical type="integer" min="0" max="99" default="0" unit="%"/>
+          <physical type="integer" interface="command" value_id="VALVE_STATE">
+            <event frame="ACK_EVENT"/>
+          </physical>
+          <conversion type="integer_integer_scale" mul="2"/>
+        </parameter>
+        <parameter id="ERROR" operations="read,event" ui_flags="service" control="NONE">
+          <logical type="option">
+            <option id="NO_ERROR" default="true"/>
+            <option id="VALVE_DRIVE_BLOCKED"/>
+            <option id="VALVE_DRIVE_LOOSE"/>
+            <option id="ADJUSTING_RANGE_TO_SMALL"/>
+            <option id="LOWBAT"/>
+          </logical>
+          <physical type="integer" interface="command" value_id="ERROR">
+            <event frame="ACK_EVENT"/>
           </physical>
         </parameter>
       </paramset>
-      
-      <paramset type="LINK" id="config_ch_link">
-        <parameter id="PEER_NEEDS_BURST">
-          <logical type="boolean" default="false"/>
-          <physical type="integer" interface="config" list="4" index="1.0" size="0.1"/>
-        </parameter>
-        <parameter id="EXPECT_AES">
-          <logical type="boolean" default="false"/>
-          <physical type="integer" interface="config" list="4" index="1.7" size="0.1"/>
-        </parameter>
-      </paramset>
+      <paramset type="LINK" id="config_ch_link"/>
     </channel>
   </channels>
   <frames>
-    <frame id="INFO_LEVEL" direction="from_device" allowed_receivers="BROADCAST,CENTRAL,OTHER" event="true" type="0x10" channel_field="9:0.6">
-      <parameter type="integer" index="10.0" size="1.0" param="STATE"/>
+    <frame id="ACK_EVENT" direction="from_device" event="true" fixed_channel="1" type="0x02">
+      <parameter type="integer" index="11.0" size="1.0" param="VALVE_STATE"/>
+      <parameter type="integer" index="12.1" size="0.3" param="ERROR"/>
     </frame>
   </frames>
   
