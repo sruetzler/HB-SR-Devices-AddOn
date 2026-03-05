@@ -93,6 +93,10 @@
           <logical type="boolean" default="false"/>
           <physical type="integer" interface="config" list="4" index="1.0" size="0.1"/>
         </parameter>
+        <parameter id="EXPECT_AES">
+          <logical type="boolean" default="true"/>
+          <physical type="integer" interface="config" list="4" index="1.7" size="0.1"/>
+        </parameter>
       </paramset>
     </channel>
   </channels>
