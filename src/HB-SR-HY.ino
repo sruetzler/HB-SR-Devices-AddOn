@@ -21,7 +21,7 @@
 #define CONFIG_BUTTON_PIN 8
 
 #define PEERS_PER_CHANNEL 4
-#define NUM_CHANNELS 1
+#define NUM_CHANNELS 2
 
 // Periodischer Status wie echte Ventile (konservativ; kann man später tunen)
 #define STATUS_PERIOD_SECONDS 300UL  // 5 Minuten

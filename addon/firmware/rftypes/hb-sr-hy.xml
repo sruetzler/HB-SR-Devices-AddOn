@@ -99,11 +99,58 @@
         </parameter>
       </paramset>
     </channel>
+    
+    <channel index="2" type="CLIMATECONTROL_REGULATOR">
+      <link_roles>
+        <source name="CLIMATECONTROL_TC"/>
+      </link_roles>
+      <paramset type="MASTER" id="thermostat_ch_master"/>
+      <paramset type="VALUES" id="thermostat_ch_values">
+        <parameter id="ADJUSTING_DATA" operations="read,event" control="NONE">
+          <logical type="integer" min="0" max="250"/>
+          <physical type="integer" interface="command" value_id="ADJUSTING_DATA">
+            <event frame="CLIMATE_EVENT"/>
+          </physical>
+        </parameter>
+        <parameter id="STATE" operations="write" ui_flags="internal" control="SWITCH.STATE">
+          <logical type="boolean" default="false"/>
+          <physical type="integer" interface="command" value_id="LEVEL">
+            <set request="LEVEL_SET"/>
+          </physical>
+          <conversion type="boolean_integer" threshold="1" false="0" true="200"/>
+        </parameter>
+      </paramset>
+      <paramset type="LINK" id="thermostat_ch_link">
+        <parameter id="PEER_NEEDS_BURST">
+          <logical type="boolean" default="false"/>
+          <physical type="integer" interface="config" list="3" index="1.0" size="0.1"/>
+        </parameter>
+        <parameter id="EXPECT_AES">
+          <logical type="boolean" default="false"/>
+          <physical type="integer" interface="config" list="3" index="1.7" size="0.1"/>
+        </parameter>
+      </paramset>
+    </channel>
   </channels>
   <frames>
     <frame id="ACK_EVENT" direction="from_device" event="true" fixed_channel="1" type="0x02">
       <parameter type="integer" index="11.0" size="1.0" param="VALVE_STATE"/>
       <parameter type="integer" index="12.1" size="0.3" param="ERROR"/>
+    </frame>
+    <frame id="CLIMATE_EVENT" direction="from_device" event="true" fixed_channel="2" type="0x58">
+      <parameter type="integer" index="10.0" size="1.0" param="ADJUSTING_DATA"/>
+    </frame>
+    <frame id="LEVEL_SET" direction="to_device" type="0x11" subtype="0x02" subtype_index="9" channel_field="10">
+      <parameter type="integer" index="11.0" size="1.0" param="LEVEL"/>
+    </frame>
+    <frame id="LEVEL_GET" direction="to_device" type="0x01" channel_field="9">
+      <parameter type="integer" index="10.0" size="1.0" const_value="14"/>
+    </frame>
+    <frame id="INFO_LEVEL" direction="from_device" allowed_receivers="BROADCAST,CENTRAL,OTHER" event="true" type="0x10" subtype="6" subtype_index="9" channel_field="10">
+      <parameter type="integer" index="11.0" size="1.0" param="LEVEL"/>
+    </frame>
+    <frame id="ACK_STATUS" direction="from_device" event="true" type="0x02" subtype="1" subtype_index="9" channel_field="10">
+      <parameter type="integer" index="11.0" size="1.0" param="LEVEL"/>
     </frame>
   </frames>
   
