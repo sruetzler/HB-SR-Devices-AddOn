@@ -101,35 +101,81 @@
     </channel>
     
     <channel index="2" type="CLIMATECONTROL_REGULATOR">
-      <link_roles>
+    <link_roles>
         <source name="CLIMATECONTROL_TC"/>
-      </link_roles>
-      <paramset type="MASTER" id="thermostat_ch_master"/>
-      <paramset type="VALUES" id="thermostat_ch_values">
-        <parameter id="ADJUSTING_DATA" operations="read,event" control="NONE">
-          <logical type="integer" min="0" max="250"/>
-          <physical type="integer" interface="command" value_id="ADJUSTING_DATA">
-            <event frame="CLIMATE_EVENT"/>
-          </physical>
+    </link_roles>
+
+    <paramset type="MASTER" id="thermostat_ch_master">
+        <parameter id="GLOBAL_BUTTON_LOCK" operations="read,write,event" ui_flags="service">
+        <logical type="boolean" default="false"/>
+        <physical type="integer" interface="config" list="1" index="0.0" size="0.1">
+            <event frame="INFO_ACTUATOR_STATUS"/>
+        </physical>
         </parameter>
-        <parameter id="STATE" operations="write" ui_flags="internal" control="SWITCH.STATE">
-          <logical type="boolean" default="false"/>
-          <physical type="integer" interface="command" value_id="LEVEL">
+
+        <parameter id="LOWBAT_LIMIT" operations="read,write,event" ui_flags="service">
+        <logical type="integer" min="0" max="255" default="22" unit="V">
+            <conversion type="integer_integer_map">
+            <map from_device="0" to_device="0"/>
+            </conversion>
+        </logical>
+        <physical type="integer" interface="config" list="0" index="18.0" size="1.0"/>
+        </parameter>
+    </paramset>
+
+    <paramset type="VALUES" id="thermostat_ch_values">
+        <parameter id="SETPOINT" operations="read,write,event" control="TEMP.SETPOINT">
+        <logical type="float" min="6.0" max="30.0" default="21.0" unit="°C">
+            <special_value id="VENT_CLOSED" value="0.0"/>
+            <special_value id="VENT_OPEN" value="100.0"/>
+        </logical>
+        <physical type="integer" interface="command" value_id="LEVEL" no_init="true">
             <set request="LEVEL_SET"/>
-          </physical>
-          <conversion type="boolean_integer" threshold="1" false="0" true="200"/>
+            <get request="LEVEL_GET"/>
+            <event frame="INFO_LEVEL"/>
+            <event frame="ACK_STATUS"/>
+        </physical>
+        <conversion type="float_integer_scale" factor="2"/>
         </parameter>
-      </paramset>
-      <paramset type="LINK" id="thermostat_ch_link">
+
+        <parameter id="ADJUSTING_COMMAND" operations="read,event" control="NONE">
+        <logical type="integer" min="0" max="255"/>
+        <physical type="integer" interface="command" value_id="ADJUSTING_COMMAND">
+            <event frame="CLIMATE_EVENT"/>
+        </physical>
+        </parameter>
+
+        <parameter id="ADJUSTING_DATA" operations="read,event" control="NONE">
+        <logical type="integer" min="0" max="255"/>
+        <physical type="integer" interface="command" value_id="ADJUSTING_DATA">
+            <event frame="CLIMATE_EVENT"/>
+        </physical>
+        </parameter>
+
+        <parameter id="STATE" operations="write" ui_flags="internal" control="SWITCH.STATE">
+        <logical type="boolean" default="false"/>
+        <physical type="integer" interface="command" value_id="LEVEL">
+            <set request="LEVEL_SET"/>
+        </physical>
+        <conversion type="boolean_integer" threshold="1" false="0" true="200"/>
+        </parameter>
+    </paramset>
+
+    <paramset type="LINK" id="thermostat_ch_link">
         <parameter id="PEER_NEEDS_BURST">
-          <logical type="boolean" default="false"/>
-          <physical type="integer" interface="config" list="3" index="1.0" size="0.1"/>
+        <logical type="boolean" default="true"/>
+        <physical type="integer" interface="config" list="3" index="1.0" size="0.1"/>
         </parameter>
+
         <parameter id="EXPECT_AES">
-          <logical type="boolean" default="false"/>
-          <physical type="integer" interface="config" list="3" index="1.7" size="0.1"/>
+        <logical type="boolean" default="false"/>
+        <physical type="integer" interface="config" list="3" index="1.7" size="0.1"/>
         </parameter>
-      </paramset>
+    </paramset>
+
+    <enforce_link>
+        <value id="PEER_NEEDS_BURST" value="true"/>
+    </enforce_link>
     </channel>
   </channels>
   <frames>
@@ -138,7 +184,8 @@
       <parameter type="integer" index="12.1" size="0.3" param="ERROR"/>
     </frame>
     <frame id="CLIMATE_EVENT" direction="from_device" event="true" fixed_channel="2" type="0x58">
-      <parameter type="integer" index="10.0" size="1.0" param="ADJUSTING_DATA"/>
+        <parameter type="integer" index="9.0" size="1.0" param="ADJUSTING_COMMAND"/>
+        <parameter type="integer" index="10.0" size="1.0" param="ADJUSTING_DATA"/>
     </frame>
     <frame id="LEVEL_SET" direction="to_device" type="0x11" subtype="0x02" subtype_index="9" channel_field="10">
       <parameter type="integer" index="11.0" size="1.0" param="LEVEL"/>

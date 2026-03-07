@@ -23,10 +23,6 @@
 #define PEERS_PER_CHANNEL 4
 #define NUM_CHANNELS 2
 
-// Periodischer Status wie echte Ventile (konservativ; kann man später tunen)
-#define STATUS_PERIOD_SECONDS 300UL  // 5 Minuten
-#define STATUS_JITTER_SECONDS  20UL  // +/- Jitter, damit nicht “synchron” im Funk
-
 using namespace as;
 
 // DeviceInfo
@@ -42,6 +38,18 @@ const struct DeviceInfo PROGMEM devinfo = {
 // Hardware
 typedef AvrSPI<10,11,12,13> RadioSPI;
 typedef AskSin<StatusLed<LED_PIN>,BatterySensor,Radio<RadioSPI,2> > Hal;
+
+// Helpers
+static uint8_t map255to200(uint8_t v255) {
+  uint16_t tmp = (uint16_t)v255 * 200 + 127;
+  return (uint8_t)(tmp / 255);
+}
+static uint8_t pct255(uint8_t v255) {
+  return (uint8_t)((uint16_t)v255 * 100 / 255);
+}
+static uint8_t pct200(uint8_t v200) {
+  return (uint8_t)((uint16_t)v200 * 100 / 200);
+}
 
 // List0
 DEFREGISTER(Reg0,DREG_INTKEY,DREG_LEDMODE,MASTERID_REGS,DREG_LOWBATLIMIT)
@@ -73,42 +81,61 @@ public:
   }
 };
 
-// List4 (Peer-Burst Flag)
-DEFREGISTER(Reg4)
-class SwList4 : public RegList4<Reg4> {
+// List3 / List4 (Peer flags)
+DEFREGISTER(Reg3)
+class ThermoList3 : public RegList3<Reg3> {
 public:
-  SwList4 (uint16_t addr) : RegList4<Reg4>(addr) {}
+  ThermoList3 (uint16_t addr) : RegList3<Reg3>(addr) {}
+  bool peerNeedsBurst () const { return this->readBit(1, 0, false); }
+  bool peerNeedsBurst (bool v) { return this->writeBit(1, 0, v); }
+  void defaults () { clear(); }
+};
+
+DEFREGISTER(Reg4)
+class ValveList4 : public RegList4<Reg4> {
+public:
+  ValveList4 (uint16_t addr) : RegList4<Reg4>(addr) {}
   bool peerNeedsBurst () const { return this->readBit(1, 0, false); }
   bool peerNeedsBurst (bool v) { return this->writeBit(1, 0, v); }
   void defaults () { clear(); }
 };
 
 // ------------------------------------------------------------
-// ACK_EVENT (0x02) wie Ventile im Mitschnitt
-//
-// len=0x0E  => 5 Payload-Bytes
-// payload: [ channel ][ subcom ][ valveRaw ][ errBits ][ extra ]
-//
-// AskSin++: initWithCount(len,type,flags,channel) schreibt channel als 1. Payload-Byte,
-// danach kommen subcom + pload[0..2] (3 Bytes) => insgesamt 5 Payload-Bytes.
-//
-// Flags: 0x82 (wie echte Ventile)
+// ACK_EVENT (0x02) für Ventil-Emu
+// On-air:
+// [cnt][flags][type][from3][to3][channel][subcom][valveRaw][errBits][extra]
 // ------------------------------------------------------------
 class ValveEventMsg : public Message {
 public:
   void init(uint8_t msgcnt, uint8_t channel, uint8_t valveRaw, uint8_t error, uint8_t extra) {
     if (valveRaw > 200) valveRaw = 200;
-
-    initWithCount(0x0E, 0x02, 0x82, channel);   // bleibt 0x82
+    initWithCount(0x0E, 0x02, 0x82, channel);
     cnt    = msgcnt;
     subcom = 0x01;
-
-    pload[0] = valveRaw;                 // valveRaw (0..200)
-    pload[1] = (error & 0x07) << 1;      // errBits
-    pload[2] = extra;                    // extra status byte (echt oft 0x20/0x21)
+    pload[0] = valveRaw;
+    pload[1] = (error & 0x07) << 1;
+    pload[2] = extra;
   }
 };
 
+// ------------------------------------------------------------
+// 0x58 Thermostat -> Ventil
+// Rohaufbau, weil AskSin++ init/subcom hier nicht das gewünschte Byte-Layout liefert.
+// Ziel on-air:
+// [cnt][flags][type][from3][to3][0x03][level]
+// ------------------------------------------------------------
+class LevelSetMsg : public Message {
+public:
+  void init(uint8_t msgcnt, uint8_t level) {
+    if (level > 250) level = 250;
+
+    Message::init(0x0B, msgcnt, 0x58, 0xA2, 0x03, level);
+
+    // zur Sicherheit explizit die beiden letzten Payload-Bytes setzen
+    buffer()[9]  = 0x03;
+    buffer()[10] = level;
+  }
+};
 static void dumpMsg(const __FlashStringHelper* tag, const Message& msg) {
   DPRINT(tag);
   DPRINT(F(" len=0x")); DHEX(msg.length());
@@ -131,26 +158,17 @@ static void dumpMsg(const __FlashStringHelper* tag, const Message& msg) {
   DPRINTLN(F(""));
 }
 
-// Helpers
-static uint8_t map255to200(uint8_t v255) {
-  // Rundung: (v*200 + 127) / 255
-  uint16_t tmp = (uint16_t)v255 * 200 + 127;
-  return (uint8_t)(tmp / 255);
-}
-static uint8_t pct255(uint8_t v255) {
-  return (uint8_t)((uint16_t)v255 * 100 / 255);
-}
-static uint8_t pct200(uint8_t v200) {
-  return (uint8_t)((uint16_t)v200 * 100 / 200);
-}
-
+// ------------------------------------------------------------
 // Channel
-class ConfigChannel : public Channel<Hal,SwList1,EmptyList,SwList4,PEERS_PER_CHANNEL,SwList0> {
+// Channel 1 = Ventil-Emu
+// Channel 2 = Thermostat-Testsender
+// ------------------------------------------------------------
+class ConfigChannel : public Channel<Hal,SwList1,EmptyList,ValveList4,PEERS_PER_CHANNEL,SwList0> {
 private:
   uint8_t m_status;
-  uint8_t m_valveRaw;   // 0..200 (Istwert, den wir im ACK_EVENT zurückmelden)
+  uint8_t m_valveRaw;   // 0..200
   uint8_t m_error;      // 0..4
-  uint8_t m_extra;      // wir senden 0x20/0x21 wie echte Ventile (toggle)
+  uint8_t m_extra;      // toggles 0x20/0x21
 
   class AsyncStatusAlarm : public Alarm {
     ConfigChannel& ch;
@@ -165,11 +183,22 @@ private:
   public:
     PeriodicStatusAlarm(ConfigChannel& c) : Alarm(0), ch(c) {}
     virtual ~PeriodicStatusAlarm() {}
-    virtual void trigger(AlarmClock&) { ch.sendPeriodicStatusEvent(); }
+    virtual void trigger(AlarmClock&) { ch.periodicStatusTrigger(); }
   } periodicAlarm;
 
+  class TestValveCommandAlarm : public Alarm {
+    ConfigChannel& ch;
+  public:
+    TestValveCommandAlarm(ConfigChannel& c) : Alarm(0), ch(c) {}
+    virtual ~TestValveCommandAlarm() {}
+    virtual void trigger(AlarmClock&) { ch.testValveCommandTrigger(); }
+  } testAlarm;
+
+  uint8_t m_testIndex;
+  bool m_testEnabled;
+
 public:
-  typedef Channel<Hal,SwList1,EmptyList,SwList4,PEERS_PER_CHANNEL,SwList0> BaseChannel;
+  typedef Channel<Hal,SwList1,EmptyList,ValveList4,PEERS_PER_CHANNEL,SwList0> BaseChannel;
 
   ConfigChannel () :
     BaseChannel(),
@@ -178,10 +207,13 @@ public:
     m_error(0),
     m_extra(0x21),
     asyncAlarm(*this),
-    periodicAlarm(*this) {}
+    periodicAlarm(*this),
+    testAlarm(*this),
+    m_testIndex(0),
+    m_testEnabled(false) {}
+
   virtual ~ConfigChannel () {}
 
-  // Diese zwei braucht AskSin++ intern (AckStatus/InfoActuatorStatus)
   uint8_t status () const { return m_status; }
   uint8_t flags  () const { return 0; }
 
@@ -190,15 +222,21 @@ public:
     DPRINT(F("ConfigChanged - FACTOR: ")); DPRINTLN(this->getList1().factor());
   }
 
+  bool isValveChannel() const {
+    return this->number() == 1;
+  }
+
+  bool isThermostatChannel() const {
+    return this->number() == 2;
+  }
+
   void setError(uint8_t e) {
     if (e <= 4) {
       m_error = e;
-      scheduleAsyncStatusEvent();
       changed(true);
     }
   }
 
-  // Ventil-Emu: Thermostat sendet Stellwert (0..255) -> wir übernehmen als "Istwert" (0..200)
   void setFromThermostatValveRaw200(uint8_t raw200) {
     if (raw200 > 200) raw200 = 200;
     m_valveRaw = raw200;
@@ -211,51 +249,26 @@ public:
   }
 
   uint8_t nextExtra() {
-    // Toggle zwischen 0x20 und 0x21 (wie echt beobachtet)
     m_extra ^= 0x01;
     m_extra = (m_extra & 0x01) ? 0x21 : 0x20;
     return m_extra;
   }
 
   void scheduleAsyncStatusEvent() {
+    if (!isValveChannel()) return;
     sysclock.cancel(asyncAlarm);
     asyncAlarm.set(millis2ticks(3000));
     sysclock.add(asyncAlarm);
     DPRINTLN(F("  -> Async Status-Event geplant in 3 Sekunden"));
   }
 
-  void startPeriodicStatus() {
-    // Erstes Event “bald”, danach periodisch.
-    // Jitter wird in sendPeriodicStatusEvent() neu geplant.
-    sysclock.cancel(periodicAlarm);
-    periodicAlarm.set(millis2ticks(5000));
-    sysclock.add(periodicAlarm);
-    DPRINTLN(F("  -> Periodischer Status aktiviert (first in ~5s)"));
-  }
-
-  void sendPeriodicStatusEvent() {
-    DPRINTLN(F("=== PERIODIC STATUS EVENT ==="));
-    sendAsyncStatusEvent();
-
-    // Neu planen mit Jitter
-    uint16_t base = (uint16_t)STATUS_PERIOD_SECONDS;
-    uint16_t jit  = (uint16_t)STATUS_JITTER_SECONDS;
-    // sehr simple “Pseudo”-Jitter: abhängig von valveRaw und cnt
-    uint16_t off  = (uint16_t)((m_valveRaw + this->device().nextcount()) % (2 * jit + 1));
-    int16_t  delta = (int16_t)off - (int16_t)jit; // [-jit .. +jit]
-    uint32_t nextS = (uint32_t)base + (int32_t)delta;
-
-    sysclock.cancel(periodicAlarm);
-    periodicAlarm.set(seconds2ticks(nextS));
-    sysclock.add(periodicAlarm);
-
-    DPRINT(F("  -> next periodic in ")); DPRINT((uint16_t)nextS); DPRINTLN(F("s"));
-  }
-
-  // unsolicited Status (new cnt) an Peers (+ optional Master)
   void sendAsyncStatusEvent() {
+    if (!isValveChannel()) return;
+
+    DPRINTLN(F("=== ASYNC STATUS EVENT ==="));
+
     ValveEventMsg msg;
-    uint8_t cnt   = this->device().nextcount();
+    uint8_t cnt = this->device().nextcount();
     uint8_t extra = nextExtra();
     msg.init(cnt, this->number(), m_valveRaw, m_error, extra);
 
@@ -263,14 +276,12 @@ public:
     this->device().getDeviceID(me);
     msg.from(me);
 
-    // (1) Master (CCU)
     HMID master = this->device().getMasterID();
     if (master.valid()) {
       msg.to(master);
       this->device().send(msg, master);
     }
 
-    // (2) alle Peers in list4
     for (uint8_t i = 0; i < this->peers(); i++) {
       Peer p = this->peerat(i);
       if (!p.valid()) continue;
@@ -281,7 +292,7 @@ public:
       msg.to(peerid);
       msg.burstRequired(needsBurst);
 
-      DPRINT(F("  -> Status an Peer #")); DPRINT(i); DPRINT(F(": "));
+      DPRINT(F("  -> Async an Peer #")); DPRINT(i); DPRINT(F(": "));
       DHEX(peerid.id0()); DHEX(peerid.id1()); DHEX(peerid.id2());
       DPRINT(F(" burst=")); DPRINTLN(needsBurst);
 
@@ -289,9 +300,8 @@ public:
     }
   }
 
-  // SOFORT-Reply auf 0x58 (gleicher cnt!) – OHNE burstRequired(), damit flags=0x82 bleibt
   void sendImmediateReply(const HMID& peer, uint8_t rxCnt, bool burstFromList4) {
-    (void)burstFromList4; // absichtlich ungenutzt: Reply soll flags=0x82 bleiben
+    if (!isValveChannel()) return;
 
     ValveEventMsg reply;
     uint8_t extra = nextExtra();
@@ -308,10 +318,130 @@ public:
     DPRINT(F(" (")); DPRINT(pct200(m_valveRaw)); DPRINT(F("%))"));
     DPRINT(F(" err=")); DPRINT(m_error);
     DPRINT(F(" extra=0x")); DHEX(extra);
-    DPRINTLN(F(" flags=0x82"));
+    DPRINT(F(" burst(list4)=")); DPRINTLN(burstFromList4);
 
     dumpMsg(F("  TX-REPLY"), reply);
     this->device().send(reply, peer);
+  }
+
+  void enablePeriodicStatus(bool firstShort = false) {
+    if (!isValveChannel()) return;
+    sysclock.cancel(periodicAlarm);
+    uint32_t sec = firstShort ? 5 : 300;
+    periodicAlarm.set(seconds2ticks(sec));
+    sysclock.add(periodicAlarm);
+    DPRINT(F("  -> Periodischer Status aktiviert (first in ~"));
+    DPRINT(sec);
+    DPRINTLN(F("s)"));
+  }
+
+  void periodicStatusTrigger() {
+    if (!isValveChannel()) return;
+
+    DPRINTLN(F("=== PERIODIC STATUS EVENT ==="));
+
+    ValveEventMsg msg;
+    uint8_t cnt = this->device().nextcount();
+    uint8_t extra = nextExtra();
+    msg.init(cnt, this->number(), m_valveRaw, m_error, extra);
+
+    HMID me;
+    this->device().getDeviceID(me);
+    msg.from(me);
+
+    HMID master = this->device().getMasterID();
+    if (master.valid()) {
+      msg.to(master);
+      this->device().send(msg, master);
+    }
+
+    for (uint8_t i = 0; i < this->peers(); i++) {
+      Peer p = this->peerat(i);
+      if (!p.valid()) continue;
+
+      HMID peerid = p;
+      bool needsBurst = this->getList4(p).peerNeedsBurst();
+
+      msg.to(peerid);
+      msg.burstRequired(needsBurst);
+
+      DPRINT(F("  -> Status an Peer #")); DPRINT(i); DPRINT(F(": "));
+      DHEX(peerid.id0()); DHEX(peerid.id1()); DHEX(peerid.id2());
+      DPRINT(F(" burst=")); DPRINTLN(needsBurst);
+
+      this->device().send(msg, peerid);
+    }
+
+    uint16_t nextSec = 270 + (rand() % 31); // 270..300
+    periodicAlarm.set(seconds2ticks(nextSec));
+    sysclock.add(periodicAlarm);
+
+    DPRINT(F("  -> next periodic in "));
+    DPRINT(nextSec);
+    DPRINTLN(F("s)"));
+  }
+
+  void enableTestMode(bool firstShort = false) {
+    if (!isThermostatChannel()) return;
+    m_testEnabled = true;
+    sysclock.cancel(testAlarm);
+    uint32_t sec = firstShort ? 10 : 60;
+    testAlarm.set(seconds2ticks(sec));
+    sysclock.add(testAlarm);
+    DPRINTLN(F("  -> Test-Modus für Channel 2 aktiviert (sendet jede Minute an Ventil)"));
+  }
+
+  uint8_t nextTestLevel() {
+    // wenige Änderungen um das Ventilverhalten zu beobachten
+    static const uint8_t vals[] = {51, 60, 70, 76, 70, 60, 51};
+    uint8_t level = vals[m_testIndex % (sizeof(vals) / sizeof(vals[0]))];
+    m_testIndex++;
+    return level;
+  }
+
+  void sendTestValveCommand() {
+    if (!isThermostatChannel()) return;
+    if (!m_testEnabled) return;
+
+    Peer p = this->peerat(0);
+    if (!p.valid()) {
+      DPRINTLN(F("=== TEST: kein Peer am Channel 2 ==="));
+      return;
+    }
+
+    uint8_t level = nextTestLevel();
+
+    DPRINTLN(F("=== TEST: Sende 0x58 (Valve-Command) an Ventil ==="));
+    DPRINT(F("  Test-Wert #")); DPRINT(m_testIndex); DPRINT(F(": level=")); DPRINT(level);
+    DPRINT(F(" (~")); DPRINT(pct255(level)); DPRINTLN(F("%)"));
+
+    LevelSetMsg msg;
+    uint8_t cnt = this->device().nextcount();
+    msg.init(cnt, level);
+
+    HMID me;
+    this->device().getDeviceID(me);
+    msg.from(me);
+
+    HMID peerid = p;
+    msg.to(peerid);
+
+    DPRINT(F("  -> 0x58 an Peer: "));
+    DHEX(peerid.id0()); DHEX(peerid.id1()); DHEX(peerid.id2());
+    DPRINT(F(" level=")); DPRINT(level);
+    DPRINT(F(" payload0=0x03 payload1=0x"));
+    DHEX(level);
+    DPRINTLN(F(""));
+
+    dumpMsg(F("  TX-0x58"), msg);
+    this->device().send(msg, peerid);
+  }
+
+  void testValveCommandTrigger() {
+    if (!isThermostatChannel()) return;
+    sendTestValveCommand();
+    testAlarm.set(seconds2ticks(60));
+    sysclock.add(testAlarm);
   }
 };
 
@@ -323,23 +453,8 @@ public:
   ConfigDeviceType(const DeviceInfo& i, uint16_t addr) : DevType(i,addr) {}
   virtual ~ConfigDeviceType() {}
 
-  bool isPeerOnAnyChannel(const HMID& sender, uint8_t& outMyCh) {
-    for (uint8_t myCh = 1; myCh <= ChannelCount; myCh++) {
-      uint8_t pidx = this->channel(myCh).peerfor(sender);
-      if (pidx >= this->channel(myCh).peers()) continue;
-      Peer p = this->channel(myCh).peerat(pidx);
-      if (!p.valid()) continue;
-      outMyCh = myCh;
-      return true;
-    }
-    return false;
-  }
-
   virtual bool process(Message& msg) {
-    // --- 0x58: vom Thermostat (Setpoint/Steuerung) ---
     if (msg.type() == 0x58) {
-
-      // Für 0x58 mit 2 Payload-Bytes braucht man len=0x0B => msg.length() == 11.
       if (msg.length() < 11) {
         DPRINTLN(F("-> 0x58 empfangen aber zu kurz (kein payload0+payload1)"));
         return true;
@@ -348,98 +463,89 @@ public:
       const HMID& sender = msg.from();
       const HMID& dest   = msg.to();
       uint8_t rxCnt      = msg.count();
+      uint8_t payload0   = msg.buffer()[9];
+      uint8_t payload1   = msg.buffer()[10];
 
-      uint8_t payload0 = msg.buffer()[9];
-      uint8_t payload1 = msg.buffer()[10];
-
-      // Unser HMID
       HMID me;
       this->getDeviceID(me);
       bool toMe = (dest == me);
 
-      // Peer? (für Logging filtern wir auf “Peer”, damit’s nicht spammt)
-      uint8_t myCh = 0;
-      bool senderIsPeer = isPeerOnAnyChannel(sender, myCh);
-
-      if (senderIsPeer) {
-        dumpMsg(toMe ? F("RX-0x58") : F("RX-0x58(SNIFF)"), msg);
-        DPRINT(F("  THERM meta: type=0x58 flags=0x")); DHEX(msg.flags());
-        DPRINT(F(" cnt=0x")); DHEX(rxCnt);
-        DPRINT(F(" p0=0x")); DHEX(payload0);
-        DPRINT(F(" p1=0x")); DHEX(payload1);
-        DPRINT(F(" | p1≈")); DPRINT(pct255(payload1)); DPRINT(F("%(255)"));
-        DPRINT(F(" map200=")); DPRINT(map255to200(payload1));
-        DPRINT(F(" | toMe=")); DPRINTLN(toMe);
-      }
-
-      // Wenn NICHT an uns adressiert: strikt nur sniff/log (keine Antwort, kein State)
-      if (!toMe) return true;
-
-      // Ab hier: Ventil-Emu “wie echt”
-      // Wichtig: payload0 ist NICHT zuverlässig ein “Channel”.
-      // In deinen Logs kommen 0x00 / 0x03 vor, aber die Stellgröße steckt konsistent in payload1 (0..255).
-      uint8_t valveRaw200 = map255to200(payload1);
-
-      // Safety clamp
-      if (valveRaw200 > 200) valveRaw200 = 200;
-
-      // Peer muss passen (sonst nicht antworten)
-      if (!senderIsPeer) {
-        DPRINTLN(F("  -> 0x58 toMe, aber Sender ist kein Peer -> ignore"));
+      if (!toMe) {
+        dumpMsg(F("RX-0x58(SNIFF)"), msg);
         return true;
       }
 
-      // list4 burst (für Reply NICHT setzen, für Status-Events schon)
-      Peer p = this->channel(myCh).peerat(this->channel(myCh).peerfor(sender));
-      bool needsBurst = this->channel(myCh).getList4(p).peerNeedsBurst();
+      for (uint8_t myCh = 1; myCh <= ChannelCount; myCh++) {
+        uint8_t pidx = this->channel(myCh).peerfor(sender);
+        if (pidx >= this->channel(myCh).peers()) continue;
 
-      DPRINTLN(F("-> HvacSetpoint (0x58) an uns (Ventil-Emu)"));
-      DPRINT(F("  Sender: ")); DHEX(sender.id0()); DHEX(sender.id1()); DHEX(sender.id2());
-      DPRINT(F(" | myCh=")); DPRINT(myCh);
-      DPRINT(F(" | payload1=0x")); DHEX(payload1);
-      DPRINT(F(" => Soll≈")); DPRINT(pct255(payload1)); DPRINT(F("%(255)"));
-      DPRINT(F(" => raw200=")); DPRINTLN(valveRaw200);
+        Peer p = this->channel(myCh).peerat(pidx);
+        if (!p.valid()) continue;
 
-      // (1) Stellwert übernehmen (damit Thermostat “Istwert” angezeigt bekommt)
-      this->channel(myCh).setFromThermostatValveRaw200(valveRaw200);
+        bool needsBurst = this->channel(myCh).getList4(p).peerNeedsBurst();
 
-      // (2) Sofort-ACK_EVENT reply (gleicher Counter, flags=0x82)
-      this->channel(myCh).sendImmediateReply(sender, rxCnt, needsBurst);
+        dumpMsg(F("RX-0x58"), msg);
+        DPRINTLN(F("-> HvacSetpoint (0x58) empfangen"));
+        DPRINT(F("  Von Sender: "));
+        DHEX(sender.id0()); DHEX(sender.id1()); DHEX(sender.id2());
+        DPRINT(F(" | cnt=0x")); DHEX(rxCnt);
+        DPRINT(F(" | to="));
+        DHEX(dest.id0()); DHEX(dest.id1()); DHEX(dest.id2());
+        DPRINT(F(" | toMe=")); DPRINT(toMe);
+        DPRINT(F(" | payload0=0x")); DHEX(payload0);
+        DPRINT(F(" | payload1=0x")); DHEX(payload1);
 
-      // (3) Optional: nach Setpoint-Änderung zusätzlich ein Async-Status nach kurzer Zeit
-      // (viele echte Ventile tun das; wir lassen es drin, ist aber konservativ)
-      this->channel(myCh).scheduleAsyncStatusEvent();
+        bool hasValveSetpoint = false;
+        uint8_t valveRaw200 = 0;
+
+        if (payload0 == 0x03) {
+          hasValveSetpoint = true;
+          valveRaw200 = map255to200(payload1);
+          DPRINT(F(" | valveSoll≈")); DPRINT(pct255(payload1)); DPRINT(F("%(255)"));
+          DPRINT(F(" -> raw200=")); DPRINTLN(valveRaw200);
+        }
+        else {
+          DPRINTLN(F(" | (kein Ventil-Soll übernommen; nur Reply)"));
+        }
+
+        DPRINT(F("  -> Peer gefunden in Channel ")); DPRINTLN(myCh);
+
+        if (this->channel(myCh).isValveChannel()) {
+          if (hasValveSetpoint) {
+            this->channel(myCh).setFromThermostatValveRaw200(valveRaw200);
+          }
+          this->channel(myCh).sendImmediateReply(sender, rxCnt, needsBurst);
+          if (hasValveSetpoint) {
+            this->channel(myCh).scheduleAsyncStatusEvent();
+          }
+        }
+
+        return true;
+      }
 
       return true;
     }
 
-    // --- optional: 0x70 vom Thermostat ebenfalls loggen, wenn Peer (Debug/Reverse Engineering) ---
     if (msg.type() == 0x70) {
       if (msg.length() >= 12) {
-        const HMID& sender = msg.from();
-        uint8_t myCh = 0;
-        bool senderIsPeer = isPeerOnAnyChannel(sender, myCh);
-        if (senderIsPeer) {
-          dumpMsg(F("RX-THERM"), msg);
-          // bei len=0x0C: payload0/payload1 liegen bei buffer()[9]/[10] (wie bei deinen Logs)
-          uint8_t p0 = msg.buffer()[9];
-          uint8_t p1 = msg.buffer()[10];
-          DPRINT(F("  THERM meta: type=0x70 flags=0x")); DHEX(msg.flags());
-          DPRINT(F(" cnt=0x")); DHEX(msg.count());
-          DPRINT(F(" len=0x")); DHEX(msg.length());
-          DPRINT(F(" p0=0x")); DHEX(p0);
-          DPRINT(F(" p1=0x")); DHEX(p1);
-          // “guess”: p1 = temp*10 (C2=194 => 19.4C)
-          DPRINT(F(" | guess70: temp10≈")); DPRINT((uint16_t)p1);
-          DPRINT(F(" -> ")); DPRINT(((uint16_t)p1) / 10);
-          DPRINT(F(".")); DPRINT(((uint16_t)p1) % 10);
-          DPRINTLN(F("C"));
-        }
+        dumpMsg(F("RX-THERM"), msg);
+        uint8_t p0 = msg.buffer()[9];
+        uint8_t p1 = msg.buffer()[10];
+
+        DPRINT(F("  THERM meta: type=0x70 flags=0x")); DHEX(msg.flags());
+        DPRINT(F(" cnt=0x")); DHEX(msg.count());
+        DPRINT(F(" len=0x")); DHEX(msg.length());
+        DPRINT(F(" p0=0x")); DHEX(p0);
+        DPRINT(F(" p1=0x")); DHEX(p1);
+        DPRINT(F(" | guess70: temp10≈"));
+        DPRINT((uint16_t)p1 / 10);
+        DPRINT(F("."));
+        DPRINT((uint16_t)p1 % 10);
+        DPRINTLN(F("C"));
       }
       return DevType::process(msg);
     }
 
-    // alles andere normal
     return DevType::process(msg);
   }
 };
@@ -453,10 +559,10 @@ ConfigButton<ConfigDevice> cfgBtn(sdev, CONFIG_BUTTON_PIN);
 void setup() {
   DINIT(57600, ASKSIN_PLUS_PLUS_IDENTIFIER);
   DPRINTLN(F("=== HB-SR-HY Ventilstellungs-Empfänger (Ventil-Emu) ==="));
-  DPRINTLN(F("0x58: if addressed to us (toMe), payload1(0..255) => valve setpoint (mapped to 0..200)"));
-  DPRINTLN(F("0x58: if NOT toMe -> sniff/log only (no reply, no state)"));
-  DPRINTLN(F("ACK_EVENT (0x02/0x82): reply with our current valveRaw (0..200), extra toggles 0x20/0x21"));
-  DPRINTLN(F("Periodic status enabled (5min +/- jitter)"));
+  DPRINTLN(F("0x58 toMe: payload0=command, payload1=data (0..255 -> 0..200)"));
+  DPRINTLN(F("Channel 1 = valve emu, Channel 2 = thermostat test sender"));
+  DPRINTLN(F("ACK_EVENT (0x02/0x82): only Channel 1 replies"));
+  DPRINTLN(F("Periodic status enabled only on Channel 1"));
 
   bool first = sdev.init(hal);
   buttonISR(cfgBtn, CONFIG_BUTTON_PIN);
@@ -467,10 +573,12 @@ void setup() {
 
   sdev.initDone();
 
-  // Periodischen Status pro Channel starten
-  for (uint8_t ch = 1; ch <= NUM_CHANNELS; ch++) {
-    sdev.channel(ch).startPeriodicStatus();
-  }
+  // Channel 1: periodischer Status
+  sdev.channel(1).enablePeriodicStatus(true);
+
+  // Channel 2: Testmodus
+  sdev.channel(2).enableTestMode(true);
+  DPRINTLN(F("Channel 2 im Test-Modus: sendet jede Minute Werte ans Ventil"));
 
   hal.activity.stayAwake(seconds2ticks(15));
   hal.battery.init(seconds2ticks(60UL*60), sysclock);
