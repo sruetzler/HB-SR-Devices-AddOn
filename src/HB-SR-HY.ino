@@ -8,9 +8,10 @@
 //- -----------------------------------------------------------------------------------------------------------------------
 // ci-test=yes board=328p aes=no
 
-#define USE_AES
-#define HM_DEF_KEY 0x5f,0x8f,0xe3,0x01,0xaf,0x69,0x38,0xcf,0x1f,0xc1,0xca,0x6c,0x3d,0xf0,0x4b,0x01
-#define HM_DEF_KEY_INDEX 2
+// Pairing troubleshooting: disable AES to avoid key/index mismatch during teach-in.
+// #define USE_AES
+// #define HM_DEF_KEY 0x5f,0x8f,0xe3,0x01,0xaf,0x69,0x38,0xcf,0x1f,0xc1,0xca,0x6c,0x3d,0xf0,0x4b,0x01
+// #define HM_DEF_KEY_INDEX 2
 #define USE_WOR
 
 #define EI_NOTEXTERNAL
@@ -28,8 +29,8 @@
 using namespace as;
 
 const struct DeviceInfo PROGMEM devinfo = {
-  {0xfe,0x01,0x01},
-  "SRUE000001",
+  {0xfe,0x01,0x02},
+  "SRUE000002",
   {0xfe,0x01},
   0x11,
   0xfe,
@@ -328,7 +329,10 @@ public:
     // DPRINT(F(" subcommand=0x")); DHEX(msubc);
     // DPRINTLN(F(""));
 
-    if (fromThermPeer && toMe /*&& msg.type() == 0x58*/) {
+    const bool thermRuntimeToMe = fromThermPeer && toMe && (msg.type() == 0x58);
+    const bool valveRuntimeToMe = fromValvePeer && toMe && (msg.type() == 0x02 || msg.type() == 0x10);
+
+    if (thermRuntimeToMe) {
       logThermMeta(msg, true);
 
       HMID valve;
@@ -343,18 +347,7 @@ public:
       ownHandled = true;
     }
 
-    if (fromThermPeer && toBroadcast /*&& msg.type() == 0x58*/) {
-      logThermMeta(msg, true);
-        DPRINT(F("  -> Forward THERM->BROADCAST: "));
-        // printHMIDValue(valve);
-        // DPRINT(F(" burst=")); DPRINTLN(1);
-        HMID broadcast;
-        forwardRaw(msg, broadcast, false, F("TX->BROADCAST"));
-      ownHandled = true;
-    }
-
-
-    if (fromValvePeer && toMe /* && (msg.type() == 0x02 || msg.type() == 0x10)*/) {
+    if (valveRuntimeToMe) {
       logValveMeta(msg, true);
 
       HMID therm;
@@ -369,15 +362,17 @@ public:
       ownHandled = true;
     }
 
-    // if (fromThermPeer/* || (msg.type() == 0x58 || msg.type() == 0x70)*/) {
-    //   logThermMeta(msg, false);
-    // }
-    // else if (fromValvePeer /*|| msg.type() == 0x02 || msg.type() == 0x10*/) {
-    //   logValveMeta(msg, false);
-    // }
-    // else {
-    //   dumpMsg(F("pass->base"), msg);
-    // }
+    if (fromThermPeer && !thermRuntimeToMe) {
+      if (toBroadcast && msg.type() == 0x70) {
+        logThermMeta(msg, false);
+      }
+    }
+    else if (fromValvePeer && !valveRuntimeToMe) {
+      logValveMeta(msg, false);
+    }
+    else {
+      dumpMsg(F("pass->base"), msg);
+    }
 
     // DPRINT(F("  -> base handled="));
     // DPRINTLN(handled);
@@ -405,6 +400,23 @@ void setup() {
   DPRINTLN(F("No periodic status, no async status, no synthetic test values"));
 
   bool first = sdev.init(hal);
+
+  HMID me;
+  sdev.getDeviceID(me);
+  DPRINT(F("DeviceID: "));
+  printHMIDValue(me);
+  DPRINTLN(F(""));
+
+  pinMode(CONFIG_BUTTON_PIN, INPUT_PULLUP);
+  if (digitalRead(CONFIG_BUTTON_PIN) == LOW) {
+    DPRINTLN(F("Config button held at boot - hold for factory reset"));
+    delay(3500);
+    if (digitalRead(CONFIG_BUTTON_PIN) == LOW) {
+      DPRINTLN(F("Factory reset requested"));
+      sdev.reset();
+    }
+  }
+
   buttonISR(cfgBtn, CONFIG_BUTTON_PIN);
 
   if (first) {
