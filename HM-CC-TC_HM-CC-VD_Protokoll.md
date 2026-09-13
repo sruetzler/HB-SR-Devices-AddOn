@@ -1,6 +1,6 @@
 # HomeMatic HM-CC-TC ↔ HM-CC-VD – Protokolldokumentation
 
-Stand: 2026-09-06
+Stand: 2026-09-12
 
 ## 1. Scope
 
@@ -27,7 +27,8 @@ Die Dokumentation basiert auf:
 1. eQ-3-Gerätehandbüchern,
 2. öffentlich dokumentiertem BidCoS-Reverse-Engineering,
 3. FHEM-Implementierung für HM-CC-TC/HM-CC-VD,
-4. realen HMLAN/FHEM-Funkmitschnitten.
+4. realen HMLAN/FHEM-Funkmitschnitten,
+5. lokalen CCU-`multimac`-Mitschnitten, Oszilloskopmessungen an realen TC/VD-Paaren und gezielten HY-Emulationsversuchen.
 
 Da das proprietäre BidCoS-Protokoll nicht vollständig offiziell veröffentlicht wurde, wird zwischen **belegt**, **sehr wahrscheinlich**, **rekonstruiert** und **offen** unterschieden.
 
@@ -411,6 +412,26 @@ SUBTYPE = 01 = RESPONSE_ACK_STATUS
 
 Der Antwort-Counter ist identisch mit dem Counter des auslösenden `0x58`.
 
+## 8.2 Der TC verwendet `POSITION` für seine Ventilstellungsanzeige
+
+Dies konnte mit einem realen HM-CC-TC und einer gezielt emulierten VD-Antwort direkt validiert werden.
+
+Bei korrekt getroffenem ACK-Timing zeigte der TC exakt den aus `POSITION_RAW` dekodierten Wert:
+
+```text
+POSITION_RAW = 0x96 = 150  -> 75 %   -> TC zeigt 75 %
+POSITION_RAW = 0x00        ->  0 %   -> TC zeigt  0 %
+POSITION_RAW = 0x1E = 30   -> 15 %   -> TC zeigt 15 %
+```
+
+Damit ist nicht nur die Skalierung `/2` belegt, sondern auch die Semantik gegenüber dem TC:
+
+```text
+ACK_STATUS.POSITION = vom TC angezeigte aktuelle Ventilposition (VST)
+```
+
+Der Sollwert im vorherigen `0x58` und der vom VD gemeldete Istwert sind unabhängig. Während einer Motorfahrt kann der TC daher beispielsweise einen neuen Sollwert nahe 100 % senden und im ACK gleichzeitig noch eine deutlich kleinere aktuelle Ventilposition erhalten.
+
 ---
 
 # 9. Aktuelle Ventilposition des VD
@@ -540,21 +561,36 @@ Motorcode 0x30
 
 # 11. ACK-Timing
 
-Reale Mitschnitte zeigen, dass der HM-CC-VD sehr schnell antwortet.
+Das Antworttiming des HM-CC-VD ist für die Kommunikation mit einem realen HM-CC-TC kritisch.
 
-Beobachtete Größenordnung:
+Frühere Abschätzungen nur aus Gateway-/Seriell-Zeitstempeln waren irreführend. Direkte Messungen an `GDO0` eines real funktionierenden TC/VD-Paares zeigen zwischen:
 
 ```text
-TC A2 58
-   ↓
-ca. 10...15 ms
-   ↓
-VD 82 02
+Ende TC A2 58
+    ↓
+ca. 90...95 ms
+    ↓
+Beginn VD 82 02
 ```
 
-Dies ist die eigentliche Funkreaktionszeit.
+Die Größenordnung wurde zusätzlich durch eine VD-Emulation bestätigt:
 
-Ein in FHEM verwendeter 10-Sekunden-Timer ist lediglich ein großzügiger Software-Watchdog zur Erkennung eines ausgebliebenen Status und **nicht** die erwartete Funk-ACK-Latenz.
+- eine zu frühe synthetische Antwort wurde vom realen TC nicht dauerhaft als gültige VD-Kommunikation akzeptiert,
+- mit einer expliziten Verzögerung von ungefähr `95 ms` vor dem `ACK_STATUS` verschwand der Kommunikationsfehler,
+- der TC übernahm anschließend die im `ACK_STATUS` gemeldete Ventilposition korrekt.
+
+Wichtig ist die Bezugsgröße:
+
+```text
+~90...95 ms = Ende des empfangenen TC-Funkpakets
+              bis Beginn des VD-Antwortpakets
+```
+
+Zeitdifferenzen von ungefähr `130 ms` zwischen zwei Gateway-RX-Zeitstempeln enthalten dagegen zusätzlich die Sendedauer des ersten Telegramms und dürfen nicht als reine Antwortlatenz interpretiert werden.
+
+Die **exakte Breite** des vom TC akzeptierten Antwortfensters ist weiterhin nicht bestimmt. Belegt ist aber, dass das Timing nicht beliebig ist und eine deutlich zu frühe Antwort problematisch sein kann.
+
+Ein in FHEM verwendeter 10-Sekunden-Timer ist lediglich ein großzügiger Software-Watchdog zur Erkennung einer ausgebliebenen Statusmeldung und **nicht** die Funk-ACK-Latenz.
 
 ---
 
@@ -647,7 +683,51 @@ CNT=4B  A2 58
 CNT=4C  A2 58
 ```
 
-Dies lässt sich anhand realer Mitschnitte und der Timingformel nachvollziehen.
+Damit ist die Reihenfolge ausdrücklich:
+
+```text
+Frame mit Counter n senden
+        ↓
+Intervall f(TC-ID, n) abwarten
+        ↓
+optional implementationsspezifischer Offset
+        ↓
+Frame mit Counter n+1 senden
+```
+
+Nicht korrekt wäre, bereits für den Abstand `n → n+1` die Formel mit `n+1` auszuwerten.
+
+## 14.1 Lokale Validierung am TC `20209C`
+
+Ein lokaler `multimac`-Mitschnitt lieferte zwei aufeinanderfolgende Zyklen:
+
+```text
+16:19:01  CNT=CE  20209C -> FE0102  A2 58 ... 03 FA
+16:22:04  CNT=CF  20209C -> FE0102  A2 58 ... 03 FA
+```
+
+Beobachteter Abstand:
+
+```text
+ca. 183 s
+```
+
+Die Timingformel ergibt für:
+
+```text
+TC-ID = 20209C
+CNT   = CE
+```
+
+ungefähr:
+
+```text
+183.25 s
+```
+
+Damit bestätigt dieser reale Mitschnitt sehr gut, dass **der aktuelle Counter `CE`** den Abstand zum folgenden Counter `CF` bestimmt.
+
+Auch ein längerer Mitschnitt mit empfangenen Countern `81` und später `86` war zeitlich mit den dazwischenliegenden berechneten Slots konsistent, obwohl die Zwischenframes am untersuchten Empfänger nicht empfangen wurden.
 
 ---
 
@@ -667,7 +747,21 @@ mit einem Default von ungefähr:
 
 zum berechneten Zeitpunkt.
 
-Das ist ein praktischer Implementierungswert von FHEM.
+Für die praktische Sequenz bedeutet das in FHEM-artiger Implementierung:
+
+```text
+send(counter=n)
+    ↓
+warte T(TC-ID,n)
+    ↓
++ cyclicMsgOffset   (~200 ms)
+    ↓
+send(counter=n+1)
+```
+
+Der Offset wird also **nach dem aus dem gerade gesendeten Counter berechneten Intervall** berücksichtigt; er ist kein Grund, für den nächsten Slot bereits `counter=n+1` in die Timingformel einzusetzen.
+
+Der Wert `+200 ms` ist ein praktischer Implementierungswert von FHEM.
 
 Er beweist **nicht**, dass der originale VD exakt bei `T+200 ms` sein Empfangsfenster öffnet.
 
@@ -677,6 +771,8 @@ Mögliche Ursachen des Offsets sind unter anderem:
 - Scheduling-Latenzen,
 - HMLAN/CUL-Transportlatenzen,
 - Kombination daraus.
+
+Lokale Original-TC-Mitschnitte mit Zeitstempeln auf Sekundenebene bestätigen die Grundformel, reichen aber nicht aus, um einen Offset von nur `200 ms` am Originalgerät separat aufzulösen.
 
 ---
 
@@ -743,13 +839,36 @@ Für FHEMs TC-Emulation gilt:
 
 In der FHEM-TC-Emulation ist kein sofortiges erneutes `A2 58` als Funk-Retry vorgesehen.
 
-Für den **originalen HM-CC-TC** ist noch nicht vollständig belegt:
+## 18.1 Beobachtung am originalen HM-CC-TC
 
-- ob es einen unmittelbaren Retry gibt,
-- ob derselbe Counter verwendet würde,
-- ob bei einem fehlenden VD der nächste reguläre Slot unverändert weiterläuft.
+In einem lokalen Test wurde ein `A2 58` des originalen TC von einer passiv mithörenden CCU sicher empfangen, während der adressierte HY-Empfänger dieses Telegramm verpasste und deshalb **kein ACK** senden konnte:
 
-Ein sofortiger Retry ist derzeit **nicht belegt**.
+```text
+16:19:01  CNT=CE  TC 20209C -> FE0102  A2 58 ... 03 FA
+           kein ACK vom adressierten Empfänger
+```
+
+Die CCU beobachtete anschließend **keinen unmittelbaren Retry** mit demselben Counter.
+
+Das nächste `A2 58` kam erst im regulären nächsten Slot:
+
+```text
+16:22:04  CNT=CF  TC 20209C -> FE0102  A2 58 ... 03 FA
+```
+
+Der Abstand von ungefähr `183 s` entspricht dem für `CNT=CE` berechneten normalen Zyklus (`183.25 s`).
+
+Damit ist für den beobachteten Original-TC sehr gut belegt:
+
+```text
+fehlendes ACK
+    ↓
+kein sofortiger A2-58-Retry
+    ↓
+Counter läuft im regulären Zyklus weiter
+```
+
+Ob es in anderen Sonderzuständen oder nach mehreren aufeinanderfolgenden Misses zusätzliche Retry-/Recovery-Mechanismen gibt, bleibt offen.
 
 Wichtig:
 
@@ -861,7 +980,7 @@ DST=000000
 
 also ein Weather-/Broadcast-Telegramm.
 
-Bei einigen Mitschnitten wurde beobachtet:
+Die zeitliche Kopplung zum Stelltelegramm ist inzwischen auch lokal mehrfach bestätigt:
 
 ```text
 t = -20 s
@@ -871,27 +990,39 @@ t = 0
 CNT=n  A2 58 ...
 ```
 
-Das `0x70` und das nachfolgende `0x58` benutzen dabei denselben Counter.
+`0x70` und das nachfolgende `0x58` benutzen dabei **denselben Counter**.
 
-Beispielstruktur:
+## 21.1 Lokaler Original-TC-Mitschnitt
+
+Für den TC `20209C` wurden beispielsweise beobachtet:
 
 ```text
-CNT=n 86 70 TC_ID 000000 ...
-        |
-        | ca. 20 s
-        v
-CNT=n A2 58 TC_ID VD_ID ...
+16:18:41  CNT=CE  86 70  20209C -> 000000
+16:19:01  CNT=CE  A2 58  20209C -> FE0102   03 FA
+
+16:21:44  CNT=CF  86 70  20209C -> 000000
+16:22:04  CNT=CF  A2 58  20209C -> FE0102   03 FA
+```
+
+Damit ist für diese Zyklen exakt die Struktur sichtbar:
+
+```text
+WEATHER_EVENT(counter=n)
+        ↓ 20 s
+CLIMATE_EVENT(counter=n)
+        ↓ T(TC-ID,n)
+WEATHER_EVENT(counter=n+1)
+        ↓ 20 s
+CLIMATE_EVENT(counter=n+1)
 ```
 
 Die `0x70`-Nachricht enthält unter anderem Temperatur-/Feuchteinformationen des TC.
 
-Für die reine VD-Stellkommunikation ist bislang nicht belegt, dass der VD dieses Telegramm benötigt.
-
-FHEMs virtuelle TC-Steuerung eines HM-CC-VD funktioniert grundsätzlich über die `0x58`-Kommunikation.
+Für die reine VD-Stellkommunikation ist weiterhin nicht belegt, dass der VD dieses Telegramm zwingend benötigt. FHEMs virtuelle TC-Steuerung eines HM-CC-VD funktioniert grundsätzlich über die `0x58`-Kommunikation.
 
 Daher:
 
-**`0x70` ist Bestandteil des beobachteten TC-Funkverhaltens, aber seine direkte Relevanz für den VD bleibt offen.**
+**`0x70` ist eindeutig Bestandteil des zyklischen TC-Funkverhaltens und zeitlich/counterseitig fest mit dem folgenden `0x58` gekoppelt; seine direkte funktionale Relevanz für den VD bleibt offen.**
 
 ---
 
@@ -1096,6 +1227,39 @@ Der VD meldet also sofort seine aktuelle Position und den laufenden Motorzustand
 
 Er wartet nicht, bis das neue Ziel erreicht ist.
 
+## 27.3 Lokale Validierung mit realem TC und emuliertem VD
+
+Ein realer TC `20209C` sendete:
+
+```text
+86 A2 58 20209C FE0102 03 FA
+```
+
+Interpretation:
+
+```text
+COMMAND = 03
+TARGET  = FA = 250
+250 / 2.56 = 97.66 %
+```
+
+Die emulierte VD-Seite antwortete nach dem gemessenen Antwortdelay mit:
+
+```text
+86 82 02 FE0102 20209C 01 01 1E 20 48
+```
+
+Interpretation:
+
+```text
+POSITION = 1E = 30 / 2 = 15 %
+STATUS   = 20 = closing
+```
+
+Der reale TC übernahm daraufhin die gemeldeten `15 %` als Ventilstellung. Damit sind Antwortformat, Countergleichheit, `CTRL=82`, Positionsskalierung und die Verwendung der Position durch den TC gemeinsam praktisch validiert.
+
+Dabei ist zu beachten: Das Telegramm stammt in diesem Test von einer Emulation und ist deshalb kein Beleg dafür, dass ein originaler VD das letzte RSSI-Byte exakt auf dieselbe Weise erzeugt.
+
 ---
 
 # 28. Wesentliche Zustandsmaschine im Normalbetrieb
@@ -1150,6 +1314,12 @@ HM-CC-TC                           HM-CC-VD
 - Counter läuft modulo 256.
 - VD-Resync: einmal pro Stunde, max. 184 s Dauerempfang.
 - FHEM kann als virtueller TC einen echten VD bedienen.
+- Originale VD-Antworten verwenden im beobachteten Normalbetrieb `CTRL=0x82`.
+- Der reale TC übernimmt `ACK_STATUS.POSITION` als angezeigte Ventilstellung; `POSITION_RAW / 2` wurde mit 0 %, 15 % und 75 % praktisch validiert.
+- Das VD-ACK muss in einem definierten Zeitfenster kommen; direkte GDO0-Messungen ergeben ungefähr 90...95 ms vom Ende des TC-Pakets bis zum Beginn der VD-Antwort.
+- `TYPE=0x70` wird ungefähr 20 s vor dem zugehörigen `TYPE=0x58` mit demselben Counter gesendet.
+- Bei einem beobachteten fehlenden ACK sendete der originale TC keinen unmittelbaren `A2 58`-Retry, sondern setzte den regulären Counter-/Timingzyklus fort.
+- Für `TC=20209C`, `CNT=CE` wurden berechnet 183.25 s und real ungefähr 183 s bis `CNT=CF` beobachtet; damit ist die Verwendung des aktuellen Counters für das Folgeintervall praktisch bestätigt.
 
 ## Sehr wahrscheinlich / stark rekonstruiert
 
@@ -1181,11 +1351,12 @@ Folgende Punkte sind noch nicht vollständig geklärt:
 
 - exakte Lage des normalen VD-RX-Fensters
 - exakte Breite des normalen VD-RX-Fensters
+- exakte Breite/Toleranz des TC-Antwortfensters um den gemessenen VD-ACK-Zeitpunkt (~90...95 ms nach Ende des TC-Pakets)
 - ob der FHEM-Defaultoffset von +200 ms ein originales Gerätetiming oder primär Software-/Gateway-Latenzen kompensiert
 
 ## Fehlerfälle
 
-- exaktes Retry-Verhalten des originalen HM-CC-TC bei fehlendem ACK
+- Recovery-Verhalten des originalen HM-CC-TC nach mehreren aufeinanderfolgenden fehlenden ACKs; ein sofortiger Retry bei einem einzelnen Miss wurde im lokalen Original-TC-Test nicht beobachtet
 - Verhalten des TC mit mehreren VDs, wenn ein einzelner VD dauerhaft nicht antwortet
 - exakte Anzahl tolerierter Misses im originalen VD
 
@@ -1310,6 +1481,28 @@ Relevant für:
 - `0x70` vor `0x58`
 - mehrere VDs / Counterverhalten
 
+## S6 – lokale Messungen und Emulationsvalidierung, September 2026
+
+Verwendet wurden:
+
+- CCU2-`multimac` als passiver BidCoS-Mitschnitt,
+- serielle HY-Protokollierung,
+- direkte Oszilloskopmessungen am CC1101-`GDO0` eines realen TC/VD-Paares,
+- gezielte VD-Emulation gegenüber einem realen HM-CC-TC.
+
+Damit lokal validiert:
+
+- `0x70` ungefähr 20 s vor `0x58` mit identischem Counter,
+- aktueller Counter bestimmt das Folgeintervall,
+- Fortlauf des regulären TC-Zyklus trotz fehlendem ACK,
+- kein unmittelbarer `A2 58`-Retry im beobachteten Miss-Fall,
+- reale Antwortlage ungefähr 90...95 ms nach Ende des `A2 58`,
+- Akzeptanz von `CTRL=0x82`,
+- direkte Übernahme von `ACK_STATUS.POSITION` in die TC-Ventilstellungsanzeige,
+- Positionen 0 %, 15 % und 75 % über `POSITION_RAW / 2`.
+
+Diese lokalen Messungen ergänzen die externen Quellen; wo sie nur Verhalten der HY-Emulation statt eines originalen VD belegen, ist dies im Text ausdrücklich gekennzeichnet.
+
 ---
 
 # 33. Kurzreferenz
@@ -1371,6 +1564,24 @@ interval =
 
 ```text
 120.00 ... 183.75 s
+```
+
+Abstand `counter=n` zu `counter=n+1`:
+
+```text
+T(TC-ID,n)
+```
+
+Beobachtetes originales ACK-Timing:
+
+```text
+Ende TC A2 58 -> Beginn VD 82 02: ca. 90...95 ms
+```
+
+Typische TC-Vorsequenz:
+
+```text
+CNT=n  86 70  -> ca. 20 s -> CNT=n  A2 58
 ```
 
 ## Counter
