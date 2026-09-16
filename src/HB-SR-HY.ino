@@ -11,7 +11,9 @@
 //   * Link A gets an immediate synthetic ACK_STATUS built from the cached real VD state.
 //   * Link B has its own message counter and its own 120.00 ... 183.75 s schedule.
 //   * Link B sends exactly one A2 58 in the calculated slot and never does an immediate retry.
-//   * The real VD ACK_STATUS is cached asynchronously by normal pollRadio() processing.
+//   * After Link-B TX, HY reads the CC1101 directly for up to 300 ms to capture the real VD ACK_STATUS.
+//   * CC1101 RX bandwidth is widened from the AskSin++ default (~101.6 kHz) to ~203.1 kHz.
+//   * Carrier frequency / FSCTRL0 are left unchanged.
 //   * Only normal valve positions are hydraulically scaled. Special commands are conservative/transparent.
 //
 // Existing EEPROM compatibility:
@@ -23,7 +25,7 @@
 //
 // Important scope limitations matching the still-open points in the protocol notes:
 //   * AES/security handshakes for the custom 0x58/0x02 runtime path are not implemented here.
-//   * The exact original VD RX-window is unknown; VD_CYCLIC_OFFSET_MS must be validated on real hardware.
+//   * The exact original VD RX-window width is still an empirical point; cyclic Link-B timing uses no fixed offset.
 //   * Link-B phase/nextSendTime is not persisted across a HY power cycle. Without a wall clock, storing
 //     millis() would not preserve the phase; the real VD may therefore need its normal resynchronisation.
 //   * No synthetic "VD lost" error is invented for stale cache data because that status mapping is still open.
@@ -73,13 +75,22 @@ static const uint8_t CMD_DECALC      = 0x04;
 
 // CTRL A2 = RPTEN | BIDI | WKMEUP. Deliberately NO BURST.
 static const uint8_t CTRL_TC_TO_VD = 0xA2;
-// FHEM-compatible practical offset relative to the calculated Link-B base slot.
-// The exact RX-window location of the original VD is still an empirical point.
-static const uint16_t VD_CYCLIC_OFFSET_MS = 200;
 
-// Real ACKs are normally seen after only a few milliseconds. This is only a
-// bookkeeping timeout; it NEVER causes an immediate retransmission.
-static const uint16_t VD_ACK_TIMEOUT_MS = 1000;
+// Measured with the real HM-CC-VD: ACK_STATUS arrived about 130 ms after the
+// Link-B transmission. Keep a 300 ms asynchronous receive window as margin.
+// Expiry NEVER causes an immediate retransmission.
+static const uint16_t VD_ACK_TIMEOUT_MS = 300;
+
+// Link-B timebase calibration measured on this 8 MHz Pro Mini.
+// A nominal 122500 ms interval took about 122918 ms in real time.
+// Shorten millis()-based Link-B intervals by 0.9966.
+static const uint16_t LINKB_TIME_SCALE_NUM = 9966;
+static const uint16_t LINKB_TIME_SCALE_DEN = 10000;
+
+static uint32_t calibrateLinkBInterval(uint32_t ms) {
+  return (ms * (uint32_t)LINKB_TIME_SCALE_NUM)
+       / (uint32_t)LINKB_TIME_SCALE_DEN;
+}
 
 // Link-A timing measured directly on CC1101 GDO0 against a real TC/VD pair.
 // A 95 ms software delay places HY's ACK in the receive window in which the
@@ -99,10 +110,38 @@ const struct DeviceInfo PROGMEM devinfo = {
 
 typedef AvrSPI<10,11,12,13> RadioSPI;
 
+// Expose only CC1101 status information needed by the Link-B RX diagnostic.
+// Normal AskSin++ RX/TX behavior remains unchanged.
+template <class SPIType, uint8_t PWRPIN = 0xff>
+class HyCC1101 : public CC1101<SPIType,PWRPIN> {
+public:
+  void configureRxBandwidth() {
+    // AskSin++ normally initializes MDMCFG4 to 0xC8:
+    //   CHANBW = ~101.6 kHz, DRATE_E = 8.
+    //
+    // For this HY hardware the narrow filter caused intermittent loss of
+    // otherwise valid HM-CC-VD ACK_STATUS frames. 0x88 widens only the RX
+    // channel filter to ~203.1 kHz and preserves DRATE_E=8.
+    //
+    // No carrier-frequency correction is applied; FSCTRL0 is untouched.
+    this->spi.strobe(CC1101_SIDLE);
+    _delay_ms(1);
+
+    const uint8_t mdmcfg4 =
+      this->spi.readReg(CC1101_MDMCFG4, CC1101_CONFIG);
+    this->spi.writeReg(CC1101_MDMCFG4, (mdmcfg4 & 0x0f) | 0x80);
+
+    this->spi.strobe(CC1101_SRX);
+  }
+};
+
+typedef HyCC1101<RadioSPI,0xff> HyRadioChip;
+typedef Radio<RadioSPI,2,0xff,0,HyRadioChip> HyRadio;
+
 // SENDDELAY is set to 0 deliberately. The generic AskSin++ Radio defaults to a
 // 100 ms minimum interval between transmissions. HY must be able to answer a
 // TC immediately even if Link B happened to transmit shortly before.
-typedef AskSin<StatusLed<LED_PIN>,BatterySensor,Radio<RadioSPI,2,0xff,0> > Hal;
+typedef AskSin<StatusLed<LED_PIN>,BatterySensor,HyRadio> Hal;
 
 static bool timeReached(uint32_t now, uint32_t deadline) {
   return (int32_t)(now - deadline) >= 0;
@@ -295,7 +334,7 @@ private:
   // Link B state - completely independent from the real TC counter.
   uint8_t  hyTcCounter;
   bool     vdScheduleStarted;
-  uint32_t nextVdBaseMs;       // base slot, without the constant +offset
+  uint32_t nextVdBaseMs;       // exact next Link-B TX slot
   bool     lastSentWasNormal;
   uint8_t  lastSentVdTargetRaw;
 
@@ -336,6 +375,11 @@ public:
       lastVdSeenMs(0) {}
 
   virtual ~ProxyDevice() {}
+
+  void configureRadio() {
+    this->radio().configureRxBandwidth();
+    DPRINTLN(F("CC1101 RX bandwidth: ~203.1 kHz (MDMCFG4 high nibble=0x8), FSCTRL0 unchanged"));
+  }
 
   bool getFirstPeerOfChannel(uint8_t channelNo, HMID& peerid) {
     if (channelNo < 1 || channelNo > ChannelCount) return false;
@@ -514,9 +558,7 @@ public:
 
     DPRINT(F("Link B schedule started: cnt=0x"));
     DHEX(hyTcCounter);
-    DPRINT(F(" first offset="));
-    DPRINT(VD_CYCLIC_OFFSET_MS);
-    DPRINTLN(F("ms"));
+    DPRINTLN(F(" first slot=immediate"));
   }
 
   uint8_t commandForNextVdSlot() const {
@@ -536,6 +578,44 @@ public:
   uint8_t targetForNextVdSlot() const {
     if (specialMode == HY_VENT_CLOSED) return 0x00;
     return desiredVdTargetRaw;
+  }
+
+  bool waitForOutstandingVdAck(const Message& sentMsg,
+                               const HMID& valve,
+                               uint16_t timeoutMs) {
+    const uint32_t deadline = millis() + timeoutMs;
+    HMID hyTcAddress;
+    this->getDeviceID(hyTcAddress);
+
+    while (awaitingVdAck && !timeReached(millis(), deadline)) {
+      Message response;
+      uint8_t num = this->radio().read(response);
+
+      if (num >= 10) {
+        const bool matchingVdAck =
+             response.count()      == sentMsg.count()
+          && response.from()       == valve
+          && response.to()         == hyTcAddress
+          && response.type()       == TYPE_RESPONSE
+          && response.command()    == RESPONSE_ACK_STATUS
+          && response.subcommand() == VD_CHANNEL;
+
+        if (matchingVdAck) {
+          handleVdAckStatus(response);
+          return true;
+        }
+
+        // Do not silently discard unrelated traffic arriving during the
+        // short Link-B response window.
+        if (this->isDeviceID(response.from()) == false) {
+          this->process(response);
+        }
+      }
+
+      _delay_ms(2);
+    }
+
+    return awaitingVdAck == false;
   }
 
   void sendLinkBSlot() {
@@ -565,31 +645,38 @@ public:
 
     this->getHal().prepareSend(out);
 
-    // One physical attempt only. No AskSin++ send(), no waitResponse(), no
-    // automatic retry. The VD response is consumed asynchronously by process().
+    // One physical attempt only. No AskSin++ send(), no automatic retry.
+    // The VD response is read explicitly from the CC1101 below.
     // Capture the actual local send instant so a delayed loop iteration cannot
     // introduce a permanent phase error in all following slots.
     uint32_t txStartedMs = millis();
     bool sent = this->radio().write(out, false);
 
-    // FHEM stores, after a successful transmission, the current message
-    // counter together with the already calculated next send time. The
-    // interval from a transmitted CNT=n to the following CNT=n+1 is therefore
-    // timing(HY_TC_ID, n). The counter is incremented for the frame sent in the
-    // next slot.
-    // The practical FHEM-compatible cyclicMsgOffset is added by
-    // serviceRuntime() on every cycle:
-    //   next TX = txStartedMs + timing(HY_TC_ID, counter)
-    //                            + VD_CYCLIC_OFFSET_MS
-    uint32_t interval = linkBIntervalMs(hyTcAddress, counter);
+    // The interval from a transmitted CNT=n to the following CNT=n+1 is
+    // timing(HY_TC_ID, n). The next slot is anchored directly to the actual
+    // local TX start time; there is no additional fixed cyclic offset.
+    // The counter is incremented for the frame sent in the next slot.
+    uint32_t nominalInterval = linkBIntervalMs(hyTcAddress, counter);
+    uint32_t interval = calibrateLinkBInterval(nominalInterval);
     nextVdBaseMs = txStartedMs + interval;
     const uint8_t nextCounter = (uint8_t)(counter + 1U);
     hyTcCounter = nextCounter;
+
+    bool ackReceived = false;
 
     if (sent) {
       awaitingVdAck = true;
       awaitingVdCounter = counter;
       vdAckDeadlineMs = millis() + VD_ACK_TIMEOUT_MS;
+
+      // The real HM-CC-VD ACK_STATUS arrives about 130 ms after our TX.
+      // Read the CC1101 directly before doing any serial/debug output.
+      ackReceived = waitForOutstandingVdAck(out, valve, VD_ACK_TIMEOUT_MS);
+
+      if (!ackReceived) {
+        awaitingVdAck = false;
+        if (missCount != 0xff) ++missCount;
+      }
     }
     else {
       awaitingVdAck = false;
@@ -611,9 +698,10 @@ public:
     DPRINT(F(" cmd=0x")); DHEX(command);
     DPRINT(F(" targetRaw=0x")); DHEX(target);
     DPRINT(F(" nextCnt=0x")); DHEX(nextCounter);
-    DPRINT(F(" nextBaseIn=")); DPRINT(interval);
-    DPRINT(F("ms nextTxOffset=+")); DPRINT(VD_CYCLIC_OFFSET_MS);
-    DPRINTLN(F("ms"));
+    DPRINT(F(" nextNominal=")); DPRINT(nominalInterval);
+    DPRINT(F("ms nextCalibrated=")); DPRINT(interval);
+    DPRINT(F("ms ackReceived=")); DPRINT(ackReceived ? 1 : 0);
+    DPRINTLN(F(""));
   }
 
   bool handleTcClimate(Message& msg) {
@@ -742,8 +830,7 @@ public:
     startLinkBScheduleIfNeeded();
 
     if (vdScheduleStarted) {
-      uint32_t due = nextVdBaseMs + (uint32_t)VD_CYCLIC_OFFSET_MS;
-      if (timeReached(now, due)) {
+      if (timeReached(now, nextVdBaseMs)) {
         sendLinkBSlot();
       }
     }
@@ -853,7 +940,11 @@ void setup() {
   DPRINTLN(F("Link A ACK uses observed real-VD flags CTRL=0x82"));
   DPRINT(F("Link A measured response delay: +")); DPRINT(LINK_A_RESPONSE_DELAY_MS); DPRINTLN(F(" ms before ACK"));
   DPRINTLN(F("Link B: independent counter + deterministic 120..183.75 s timing"));
-  DPRINT(F("Link B practical cyclic offset: +")); DPRINT(VD_CYCLIC_OFFSET_MS); DPRINTLN(F(" ms"));
+  DPRINTLN(F("Link B cyclic offset: none"));
+  DPRINT(F("Link B timebase calibration: ")); DPRINT(LINKB_TIME_SCALE_NUM);
+  DPRINT(F("/")); DPRINTLN(LINKB_TIME_SCALE_DEN);
+  DPRINT(F("Link B VD ACK wait: ")); DPRINT(VD_ACK_TIMEOUT_MS); DPRINTLN(F(" ms direct radio.read"));
+  DPRINTLN(F("CC1101 RX bandwidth: ~203.1 kHz; carrier frequency / FSCTRL0 unchanged"));
   DPRINTLN(F("No immediate VD retry; real VD ACK is cached asynchronously"));
   DPRINTLN(F("VD cache is mirrored to CCU on CH1 via AskSin++ INFO_ACTUATOR_STATUS"));
   DPRINTLN(F("CCU status requests read the same CH1 shadow state"));
@@ -887,6 +978,11 @@ void setup() {
   }
 
   sdev.initDone();
+
+  // Apply the validated HY RF setting after normal AskSin++ initialization.
+  // Only MDMCFG4.CHANBW_E/M is changed; carrier frequency remains untouched.
+  sdev.configureRadio();
+
   sdev.dumpPeers();
   HMID linkBPeer;
   if (sdev.getFirstPeerOfChannel(VALVE_CHANNEL, linkBPeer) == false) {

@@ -1,6 +1,6 @@
 # HomeMatic HM-CC-TC ↔ HM-CC-VD – Protokolldokumentation
 
-Stand: 2026-09-12
+Stand: 2026-09-16
 
 ## 1. Scope
 
@@ -15,12 +15,16 @@ Betrachtet wird die bereits **dekodierte BidCoS-Telegrammebene**:
 COUNTER CTRL TYPE SRC DST PAYLOAD
 ```
 
-Nicht Bestandteil dieses Dokuments sind:
+Nicht Bestandteil der eigentlichen Protokollbeschreibung sind:
 
 - physikalische 868-MHz-Funkebene
 - Preamble / Sync / Whitening / CRC-Berechnung
 - Anlernen / Peering
 - Kommunikation mit einer CCU
+
+Praktisch relevante **HY-/CC1101-Implementierungserkenntnisse** werden am Ende
+bewusst separat dokumentiert. Sie sind keine Eigenschaften der BidCoS-
+Protokollsemantik.
 
 Die Dokumentation basiert auf:
 
@@ -729,6 +733,48 @@ Damit bestätigt dieser reale Mitschnitt sehr gut, dass **der aktuelle Counter `
 
 Auch ein längerer Mitschnitt mit empfangenen Countern `81` und später `86` war zeitlich mit den dazwischenliegenden berechneten Slots konsistent, obwohl die Zwischenframes am untersuchten Empfänger nicht empfangen wurden.
 
+## 14.2 Lokale HY-Zeitbasis
+
+Bei der aktuellen HY-Hardware mit ATmega328P wurde festgestellt, dass die
+Arduino-`millis()`-Zeitbasis gegenüber der realen Zeit um ungefähr `0,34 %`
+zu langsam läuft.
+
+Beispiel:
+
+```text
+Sollintervall: 122500 ms
+lokal ohne Korrektur gemessen: ca. 122918 ms
+Abweichung: ca. +418 ms
+```
+
+Für genau diesen HY-Aufbau wird deshalb lokal korrigiert mit:
+
+```text
+lokales_intervall = protokollintervall * 9966 / 10000
+```
+
+Beispiele:
+
+| Protokollintervall | lokal verwendeter Wert |
+|---:|---:|
+| 122500 ms | 122083 ms |
+| 172000 ms | 171415 ms |
+| 157500 ms | 156964 ms |
+| 143000 ms | 142513 ms |
+| 128750 ms | 128312 ms |
+| 178250 ms | 177643 ms |
+
+Nach dieser Korrektur wurden die realen Link-B-Abstände praktisch bis auf
+wenige Millisekunden getroffen.
+
+Wichtig:
+
+> `9966/10000` ist **keine HomeMatic-/BidCoS-Protokollkonstante**.
+
+Der Faktor kompensiert ausschließlich die lokale Zeitbasis der aktuell
+verwendeten HY-Hardware und muss auf anderer Hardware neu bestimmt werden
+oder entfallen.
+
 ---
 
 # 15. FHEM-Timingoffset
@@ -747,32 +793,50 @@ mit einem Default von ungefähr:
 
 zum berechneten Zeitpunkt.
 
-Für die praktische Sequenz bedeutet das in FHEM-artiger Implementierung:
+Dieser Wert ist ein praktischer Implementierungswert von FHEM und keine
+nachgewiesene Protokollkonstante.
+
+## 15.1 Aktuelle praktische Validierung mit dem originalen VD
+
+Mit dem originalen HM-CC-VD `13E142` wurde Link B über viele aufeinanderfolgende
+Zyklen mit folgendem Zeitmodell betrieben:
 
 ```text
 send(counter=n)
     ↓
 warte T(TC-ID,n)
     ↓
-+ cyclicMsgOffset   (~200 ms)
-    ↓
 send(counter=n+1)
 ```
 
-Der Offset wird also **nach dem aus dem gerade gesendeten Counter berechneten Intervall** berücksichtigt; er ist kein Grund, für den nächsten Slot bereits `counter=n+1` in die Timingformel einzusetzen.
+also ausdrücklich mit:
 
-Der Wert `+200 ms` ist ein praktischer Implementierungswert von FHEM.
+```text
+zusätzlicher fester Offset = 0 ms
+```
 
-Er beweist **nicht**, dass der originale VD exakt bei `T+200 ms` sein Empfangsfenster öffnet.
+Nach Korrektur der lokalen HY-Zeitbasis wurden unter anderem folgende reale
+Abstände beobachtet:
 
-Mögliche Ursachen des Offsets sind unter anderem:
+```text
+CNT 00 → 01: 122499 ms   Soll 122500 ms
+CNT 01 → 02: ca. 172002 ms   Soll 172000 ms
+CNT 02 → 03: ca. 157502 ms   Soll 157500 ms
+CNT 03 → 04: ca. 143002 ms   Soll 143000 ms
+CNT 04 → 05: ca. 128752 ms   Soll 128750 ms
+```
 
-- tatsächliche Lage des originalen Empfangsfensters,
-- Scheduling-Latenzen,
-- HMLAN/CUL-Transportlatenzen,
-- Kombination daraus.
+Der originale VD antwortete bei diesen Sendezeitpunkten zuverlässig.
 
-Lokale Original-TC-Mitschnitte mit Zeitstempeln auf Sekundenebene bestätigen die Grundformel, reichen aber nicht aus, um einen Offset von nur `200 ms` am Originalgerät separat aufzulösen.
+Damit gilt für den aktuell getesteten Aufbau:
+
+```text
+kein zusätzlicher protokollbedingter +200-ms-Offset erforderlich
+```
+
+Der FHEM-Defaultoffset bleibt damit ein FHEM-/Gateway-Implementierungsdetail
+und soll nicht als Eigenschaft des originalen TC↔VD-Protokolls übernommen
+werden.
 
 ---
 
@@ -786,14 +850,27 @@ Bekannt ist:
 Zeitpunkt des Zyklus = berechenbar
 ```
 
-Unbekannt:
+und für den aktuell getesteten originalen VD praktisch bestätigt ist:
+
+```text
+berechneter Slot
++
+korrekte reale Zeitbasis
++
+kein zusätzlicher fester Offset
+```
+
+trifft das Empfangsfenster zuverlässig.
+
+Unbekannt bleibt weiterhin:
 
 ```text
 RX start = T - ?
 RX end   = T + ?
 ```
 
-Dieser Punkt bleibt bewusst offen.
+Die genaue Fensterbreite ist für die aktuelle HY-Implementierung nicht mehr
+erforderlich, bleibt protokolltechnisch aber bewusst offen.
 
 ---
 
@@ -1118,6 +1195,31 @@ aktuellen Empfangszeitpunkt
 
 Ein gültiges Telegramm des bekannten TC reicht daher als plausible Grundlage, um den zukünftigen Zeitplan erneut zu bestimmen.
 
+## 24.1 Praktische Resynchronisation nach HY-Neustart
+
+In den aktuellen HY-Tests wurde folgender Fall direkt beobachtet:
+
+1. HY wurde neu gestartet.
+2. Link B begann wieder mit `CNT=00` und einer neuen lokalen Zeitphase.
+3. Der originale VD antwortete über mehrere Link-B-Slots nicht.
+4. Nach kurzem Tastendruck am VD antwortete er wieder auf den folgenden
+   passenden Link-B-Zyklus.
+
+Das bestätigt praktisch, dass ein Neustart des emulierten TC problematisch
+ist, wenn dabei Counter und/oder zeitliche Phase verloren gehen.
+
+Für einen robusten HY gilt daher weiterhin als bevorzugte Strategie:
+
+```text
+Link-B-Counter + Zeitphase über Neustarts erhalten
+```
+
+Wenn das nicht möglich ist, muss mit einer Resynchronisation des originalen
+VD gerechnet werden.
+
+Der kurze Tastendruck ist als praktische Resync-Möglichkeit beobachtet; die
+interne Firmwarelogik des VD ist damit nicht vollständig rekonstruiert.
+
 ---
 
 # 25. Neustart des TC
@@ -1320,6 +1422,9 @@ HM-CC-TC                           HM-CC-VD
 - `TYPE=0x70` wird ungefähr 20 s vor dem zugehörigen `TYPE=0x58` mit demselben Counter gesendet.
 - Bei einem beobachteten fehlenden ACK sendete der originale TC keinen unmittelbaren `A2 58`-Retry, sondern setzte den regulären Counter-/Timingzyklus fort.
 - Für `TC=20209C`, `CNT=CE` wurden berechnet 183.25 s und real ungefähr 183 s bis `CNT=CF` beobachtet; damit ist die Verwendung des aktuellen Counters für das Folgeintervall praktisch bestätigt.
+- Der originale VD `13E142` wurde über viele Link-B-Zyklen zuverlässig mit der reinen Timingformel **ohne zusätzlichen festen +200-ms-Offset** erreicht.
+- Die lokale HY-Zeitbasis wurde mit `9966/10000` korrigiert; dieser Faktor ist hardwareabhängig und keine Protokollkonstante.
+- Mit verbreiterter CC1101-RX-Bandbreite (`MDMCFG4=0x88`, ca. 203,1 kHz) wurden mindestens 16 aufeinanderfolgende VD-ACKs direkt vom HY korrekt empfangen.
 
 ## Sehr wahrscheinlich / stark rekonstruiert
 
@@ -1352,13 +1457,18 @@ Folgende Punkte sind noch nicht vollständig geklärt:
 - exakte Lage des normalen VD-RX-Fensters
 - exakte Breite des normalen VD-RX-Fensters
 - exakte Breite/Toleranz des TC-Antwortfensters um den gemessenen VD-ACK-Zeitpunkt (~90...95 ms nach Ende des TC-Pakets)
-- ob der FHEM-Defaultoffset von +200 ms ein originales Gerätetiming oder primär Software-/Gateway-Latenzen kompensiert
+- genaue historische Motivation des FHEM-Defaultoffsets von `+200 ms`; für den aktuell getesteten originalen VD ist dieser Offset nicht erforderlich
 
 ## Fehlerfälle
 
 - Recovery-Verhalten des originalen HM-CC-TC nach mehreren aufeinanderfolgenden fehlenden ACKs; ein sofortiger Retry bei einem einzelnen Miss wurde im lokalen Original-TC-Test nicht beobachtet
 - Verhalten des TC mit mehreren VDs, wenn ein einzelner VD dauerhaft nicht antwortet
 - exakte Anzahl tolerierter Misses im originalen VD
+
+## HY-Hardware / RF
+
+- genaue Ursache der starken Empfindlichkeit des aktuellen Aufbaus gegenüber parasitärer Belastung am 3,3-V-Netz
+- ob die verbreiterte RX-Bandbreite auf einer final optimierten HY-Hardware weiterhin notwendig ist
 
 ## Neustart
 
@@ -1387,7 +1497,162 @@ Für den aktuellen Anwendungsumfang nicht erforderlich:
 
 ---
 
-# 32. Quellen
+# 32. HY-/CC1101-Implementierungserkenntnisse
+
+Dieser Abschnitt beschreibt **keine BidCoS-Protokollsemantik**, sondern
+praktische RF-/Hardware-Erkenntnisse des aktuell getesteten HY-Aufbaus.
+
+## 32.1 Ausgangslage
+
+AskSin++ initialisierte den verwendeten CC1101 unter anderem mit:
+
+```text
+MDMCFG4 = 0xC8
+FSCTRL0 = 0x00
+```
+
+`MDMCFG4=0xC8` entspricht bei 26 MHz einer RX-Kanalbandbreite von ungefähr:
+
+```text
+101,6 kHz
+```
+
+Mit dieser Einstellung traten sporadische Link-B-Verluste auf.
+
+Dabei konnten zwei unterschiedliche Fälle beobachtet werden:
+
+```text
+a) HY → VD wurde gesendet, aber der VD antwortete nicht
+b) VD antwortete nachweislich auf der Luft,
+   aber HY dekodierte keinen gültigen ACK_STATUS
+```
+
+Fall b wurde durch gleichzeitigen CCU-Mitschnitt eindeutig bestätigt.
+
+## 32.2 GDO0-/FIFO-Hypothese
+
+Zunächst wurde geprüft, ob ein vorhandener VD-ACK nur wegen eines verpassten
+CC1101-GDO0-/READ-Ereignisses nicht von AskSin++ verarbeitet wurde.
+
+Nach einem normalen `300 ms` langen Empfangsfenster wurde testweise der
+READ-Zustand künstlich angestoßen und erneut aus dem RX-FIFO gelesen.
+
+Beobachtung:
+
+```text
+VD-ACK auf der Luft sichtbar
+HY normal read: timeout
+forced read: empty
+```
+
+Damit lag der fehlende ACK nicht lediglich ungelesen im RX-FIFO.
+
+Bei den betroffenen Fällen blieb der CC1101 im RX-Zustand, was dazu passt,
+dass kein vollständiger gültiger Frame dekodiert wurde.
+
+## 32.3 Verbreiterte RX-Bandbreite
+
+Als gezielter RF-Test wurde ausschließlich die RX-Bandbreite verändert:
+
+```text
+MDMCFG4: 0xC8 → 0x88
+FSCTRL0: 0x00 → 0x00
+```
+
+Damit wurde die RX-Bandbreite ungefähr geändert von:
+
+```text
+101,6 kHz → 203,1 kHz
+```
+
+Die Mittenfrequenz blieb unverändert.
+
+Mit dieser Einstellung wurden anschließend mindestens:
+
+```text
+16 / 16
+```
+
+aufeinanderfolgende Link-B-Zyklen mit vom HY selbst korrekt empfangenem
+VD-`ACK_STATUS` beobachtet.
+
+Im gleichen Zeitraum bestätigte der unabhängige CCU-Mitschnitt jeweils die
+zugehörigen VD-Antworten.
+
+Für den aktuell getesteten HY-Aufbau gilt deshalb als bewährte
+CC1101-Einstellung:
+
+```text
+MDMCFG4 = 0x88
+FSCTRL0 unverändert
+keine feste Frequenzverschiebung
+```
+
+Diese Einstellung ist eine HY-/Hardwaremaßnahme und keine Eigenschaft des
+HomeMatic-Protokolls.
+
+## 32.4 Frequenzabweichung / FREQEST
+
+Bei Diagnosemessungen des originalen TC `20209C` wurden wiederholt Werte von:
+
+```text
+FREQEST = +13 / +14
+```
+
+beobachtet.
+
+Bei einem 26-MHz-CC1101 entspricht ein FREQEST-Schritt ungefähr:
+
+```text
+1,587 kHz
+```
+
+also grob:
+
+```text
++13 ≈ +20,6 kHz
++14 ≈ +22,2 kHz
+```
+
+Bei erfolgreich empfangenen VD-Antworten wurden jedoch deutlich andere und
+teils stark schwankende FREQEST-Werte beobachtet.
+
+Daraus folgt ausdrücklich **keine** belastbare gemeinsame feste
+Frequenzkorrektur für TC und VD.
+
+Der aktuelle erfolgreiche Stand ist deshalb:
+
+```text
+FSCTRL0 nicht verschieben
+RX-Bandbreite verbreitern
+```
+
+Eine experimentelle feste Frequenzverschiebung soll nicht als
+Protokolleigenschaft übernommen werden.
+
+## 32.5 Hardwareempfindlichkeit des aktuellen Aufbaus
+
+Während der RF-Diagnose wurde beobachtet, dass bereits eine x10-
+Oszilloskop-Tastspitze am 3,3-V-Netz das Funkverhalten deutlich beeinflussen
+kann.
+
+Das ist ein starker Hinweis auf eine verbleibende Empfindlichkeit bezüglich:
+
+- Versorgung,
+- Layout,
+- Masseführung,
+- HF-Anpassung / Antennenankopplung,
+- parasitärer Kapazitäten.
+
+Die genaue Ursache ist noch offen.
+
+Dieser Befund ändert nichts an den rekonstruierten BidCoS-Telegrammen oder
+am bestätigten Link-B-Timing, sollte aber bei einer endgültigen HY-Hardware
+untersucht werden.
+
+---
+
+# 33. Quellen
 
 ## S1 – BidCoS Reverse-Engineering
 
@@ -1499,13 +1764,19 @@ Damit lokal validiert:
 - reale Antwortlage ungefähr 90...95 ms nach Ende des `A2 58`,
 - Akzeptanz von `CTRL=0x82`,
 - direkte Übernahme von `ACK_STATUS.POSITION` in die TC-Ventilstellungsanzeige,
-- Positionen 0 %, 15 % und 75 % über `POSITION_RAW / 2`.
+- Positionen 0 %, 15 % und 75 % über `POSITION_RAW / 2`,
+- praktische Link-B-Zeitabstände ohne zusätzlichen festen `+200-ms`-Offset,
+- lokale Zeitbasisabweichung des verwendeten ATmega328P-HY und Korrektur mit `9966/10000`,
+- vom originalen VD gesendete ACK_STATUS-Frames, die bei schmaler RX-Bandbreite vom HY teilweise nicht dekodiert wurden,
+- stabile Link-B-Kommunikation mit `MDMCFG4=0x88` / ca. 203,1 kHz RX-Bandbreite,
+- unterschiedliche bzw. schwankende `FREQEST`-Werte, weshalb keine feste FSCTRL0-Korrektur übernommen wurde,
+- praktische VD-Resynchronisation nach HY-Neustart durch kurzen Tastendruck.
 
 Diese lokalen Messungen ergänzen die externen Quellen; wo sie nur Verhalten der HY-Emulation statt eines originalen VD belegen, ist dies im Text ausdrücklich gekennzeichnet.
 
 ---
 
-# 33. Kurzreferenz
+# 34. Kurzreferenz
 
 ## TC → VD
 
@@ -1578,6 +1849,9 @@ Beobachtetes originales ACK-Timing:
 Ende TC A2 58 -> Beginn VD 82 02: ca. 90...95 ms
 ```
 
+Gateway-/CCU-RX-Zeitstempel können dabei ungefähr `130 ms` auseinanderliegen,
+weil sie zusätzlich die Sendedauer des ersten Telegramms enthalten.
+
 Typische TC-Vorsequenz:
 
 ```text
@@ -1594,4 +1868,16 @@ Request und zugehöriges ACK:
 
 ```text
 gleicher Counter
+```
+
+
+## HY-Implementierungswerte (nicht Teil des Protokolls)
+
+```text
+Link-B lokaler Zeitkorrekturfaktor: 9966 / 10000
+zusätzlicher fester Link-B-Offset: 0 ms
+VD-ACK-Empfangsfenster im HY: 300 ms
+CC1101 MDMCFG4: 0x88
+RX-Bandbreite: ca. 203,1 kHz
+FSCTRL0: unverändert
 ```
