@@ -1,25 +1,11 @@
 <?xml version="1.0" encoding="iso-8859-1"?>
-<device version="6" rx_modes="ALWAYS" cyclic_timeout="3600">
+<device version="9" rx_modes="ALWAYS" cyclic_timeout="3600">
   <supported_types>
     <type name="HB-SR-HY" id="HB-SR-HY" updatable="true">
       <parameter index="10.0" size="2.0" const_value="0xFE01"/>
     </type>
   </supported_types>
-  <paramset type="MASTER" id="dev_master">
-    <parameter id="INTERNAL_KEYS_VISIBLE">
-      <logical type="boolean" default="false"/>
-      <physical type="integer" interface="config" list="0" index="2" size="1.0"/>
-    </parameter>
-    <parameter id="LOCAL_RESET_DISABLE">
-      <logical type="boolean" default="false"/>
-      <physical type="integer" interface="config" list="0" index="24" size="1.0"/>
-    </parameter>
-    <parameter id="LOWBAT_LIMIT">
-      <logical type="float" min="1.0" max="5.0" default="2.2" unit="V"/>
-      <physical type="integer" interface="config" list="0" index="18" size="1.0"/>
-      <conversion type="float_integer_scale" factor="10"/>
-    </parameter>
-  </paramset>
+  <paramset type="MASTER" id="dev_master"/>
   <channels>
     <channel index="0" type="MAINTENANCE" ui_flags="internal" class="maintenance" count="1">
       <paramset type="MASTER" id="maint_ch_master"/>
@@ -105,23 +91,7 @@
         <source name="CLIMATECONTROL_TC"/>
     </link_roles>
 
-    <paramset type="MASTER" id="thermostat_ch_master">
-        <parameter id="GLOBAL_BUTTON_LOCK" operations="read,write,event" ui_flags="service">
-        <logical type="boolean" default="false"/>
-        <physical type="integer" interface="config" list="1" index="0.0" size="0.1">
-            <event frame="INFO_ACTUATOR_STATUS"/>
-        </physical>
-        </parameter>
-
-        <parameter id="LOWBAT_LIMIT" operations="read,write,event" ui_flags="service">
-        <logical type="integer" min="0" max="255" default="22" unit="V">
-            <conversion type="integer_integer_map">
-            <map from_device="0" to_device="0"/>
-            </conversion>
-        </logical>
-        <physical type="integer" interface="config" list="0" index="18.0" size="1.0"/>
-        </parameter>
-    </paramset>
+    <paramset type="MASTER" id="thermostat_ch_master"/>
 
     <paramset type="VALUES" id="thermostat_ch_values">
         <parameter id="SETPOINT" operations="read,write,event" control="TEMP.SETPOINT">

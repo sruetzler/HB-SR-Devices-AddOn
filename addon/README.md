@@ -32,6 +32,18 @@ Sonderbefehle wie explizites Öffnen/Schließen und Entkalkung werden nicht mit 
 
 Kanal 2 stellt die Verbindung zum originalen VD bereit. Ein Lernmodus und die früher dokumentierten Parameter `LEARN`, `NEWFACTOR` und `ACTFACTOR` sind in der aktuellen Firmware nicht implementiert.
 
+Ab Addon-Version 1.0.4 hat Kanal 2 keine eigenen MASTER-Konfigurationsparameter
+mehr. Die ungenutzte `GLOBAL_BUTTON_LOCK` und die doppelte `LOWBAT_LIMIT` wurden
+entfernt. Ab Version 1.0.5 entfällt `LOWBAT_LIMIT` auch auf Geräteebene, da HY
+netzversorgt ist. Für diese Bereinigung ist nur ein Addon-Update erforderlich.
+
+Ab Version 1.0.6 entfallen auch `INTERNAL_KEYS_VISIBLE` und
+`LOCAL_RESET_DISABLE` ("Lock reset via device button"). HY besitzt keine
+internen Tastenkanäle; die Resetsperre war in der Firmware nicht implementiert.
+Damit bleiben als MASTER-Konfigurationsparameter nur `ENABLE` und `FACTOR`
+auf Kanal 1. Auch hierfür genügt ein Addon-Update; die Funktion des
+Konfigurationstasters bleibt unverändert.
+
 Der neue XML-Standardwert ändert keine bereits gespeicherten Faktoren im Gerät. Bei bestehenden Installationen den gewünschten Wert auf Kanal 1 prüfen.
 
 ## Konfiguration übertragen
