@@ -97,6 +97,10 @@ static uint32_t calibrateLinkBInterval(uint32_t ms) {
 // original HM-CC-VD answers. This timing is required by the real HM-CC-TC.
 static const uint16_t LINK_A_RESPONSE_DELAY_MS = 95;
 
+// The custom radio disables AskSin++'s global send delay for Link A/B.
+// Keep the standard reply delay explicitly for pairing and CCU configuration.
+static const uint16_t CONFIG_RESPONSE_DELAY_MS = 100;
+
 // HY keeps its own two-channel device identity for the CCU. Link A still
 // behaves protocol-wise like the valve side towards the real thermostat.
 const struct DeviceInfo PROGMEM devinfo = {
@@ -919,8 +923,13 @@ public:
       return true;
     }
 
-    // Pairing, config, CCU traffic and all unrelated messages retain the normal
-    // AskSin++ behavior.
+    // MultiChannelDevice::process() normally schedules a 100 ms reply delay
+    // with setSendTimeout(). Our Radio has SENDDELAY=0, so that default call
+    // does nothing. Restore the delay for addressed base-protocol traffic;
+    // the custom Link-A/Link-B handlers above keep their separate timing.
+    if (toMe || this->isBroadcastMsg(msg)) {
+      this->radio().setSendTimeout(CONFIG_RESPONSE_DELAY_MS);
+    }
     return DevType::process(msg);
   }
 };

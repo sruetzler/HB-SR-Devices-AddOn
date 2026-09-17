@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="iso-8859-1"?>
-<device version="5" rx_modes="CONFIG,WAKEUP" cyclic_timeout="3600">
+<device version="6" rx_modes="ALWAYS" cyclic_timeout="3600">
   <supported_types>
     <type name="HB-SR-HY" id="HB-SR-HY" updatable="true">
       <parameter index="10.0" size="2.0" const_value="0xFE01"/>
@@ -62,7 +62,7 @@
           <conversion type="boolean_integer"/>
         </parameter>
         <parameter id="FACTOR">
-          <logical type="integer" min="0" max="255" default="0" unit=""/>
+          <logical type="integer" min="0" max="100" default="100" unit="%"/>
           <physical type="integer" interface="config" list="1" index="2" size="1.0"/>
         </parameter>
       </paramset>
