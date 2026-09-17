@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Clean Build",
+      "type": "shell",
+      "command": "platformio",
+      "args": ["run", "--target", "clean"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Build shared CCU addon from HY",
+      "type": "process",
+      "command": "sh",
+      "args": ["${workspaceFolder}/../../scripts/build-addon.sh"],
+      "problemMatcher": []
+    }
+  ]
+}

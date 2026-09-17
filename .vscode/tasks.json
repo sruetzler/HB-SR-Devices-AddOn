@@ -1,0 +1,13 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build shared CCU addon",
+      "type": "process",
+      "command": "sh",
+      "args": ["${workspaceFolder}/scripts/build-addon.sh"],
+      "group": "build",
+      "problemMatcher": []
+    }
+  ]
+}
