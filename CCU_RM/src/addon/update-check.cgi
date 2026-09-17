@@ -1,6 +1,6 @@
 #!/bin/tclsh
-set checkURL    "https://github.com/sruetzler/smarthome/HB-SR-Devices-AddOn/CCU_RM/src/addon/VERSION"
-set downloadURL "https://github.com/sruetzler/smarthome/HB-SR-Devices-AddOn/CCU_RM/hb-sr-devices-addon.tgz"
+set checkURL    "https://raw.githubusercontent.com/sruetzler/HB-SR-Devices-AddOn/main/CCU_RM/src/addon/VERSION"
+set downloadURL "https://raw.githubusercontent.com/sruetzler/HB-SR-Devices-AddOn/main/CCU_RM/hb-sr-devices-addon.tgz"
 catch {
   set input $env(QUERY_STRING)
   set pairs [split $input &]

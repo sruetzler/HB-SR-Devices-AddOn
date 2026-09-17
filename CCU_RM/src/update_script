@@ -9,7 +9,9 @@ echo $target
 if [ "$1" = "CCU2" ]; then
   mount -t ubifs ubi1:user /usr/local
 elif [ "$1" = "HM-RASPBERRYMATIC" ] || [ "$1" = "CCU3" ]; then
-  mount /usr/local
+  if ! mount | grep -q "/usr/local"; then
+    mount /usr/local
+  fi
 fi  
 
 ADDON_NAME=hb-sr-devices-addon
@@ -38,6 +40,7 @@ rm -f ${ADDON_DIR}/installed
 
 sync
 
-if [ "$1" = "HM-RASPBERRYMATIC" ] || [ "$1" = "CCU3" ]; then
+# Exit 10 triggers a reboot in CCU addon system
+if [ "$1" = "CCU2" ] || [ "$1" = "HM-RASPBERRYMATIC" ] || [ "$1" = "CCU3" ]; then
   exit 10
 fi

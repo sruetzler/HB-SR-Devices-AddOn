@@ -269,14 +269,14 @@ case "$1" in
     ;;
 
     info)
-      echo "Info: <b>HB-SR-Devices AddOn</b><br>"
-      echo "Info: <b>CCU3, RaspberryMatic</b><br>"
-      echo "Info: (c) 2025 Simon Rützler<br>"
-      echo "Info: <a href='https://github.com/sruetzler/smarthome/HB-SR-Devices-AddOn'>Projekt auf Github</a>"
-      echo "Version: $(cat ${ADDON_DIR}/VERSION)"
       echo "Name: HB-SR-Devices AddOn"
+      echo "Version: $(cat ${ADDON_DIR}/VERSION 2>/dev/null || echo '0.01')"
       echo "Operations: uninstall"
       echo "Update: /addons/${ADDON_NAME}/update-check.cgi"
+      echo "Info: <b>HB-SR-Devices AddOn</b><br>"
+      echo "Info: <b>CCU2, CCU3, RaspberryMatic</b><br>"
+      echo "Info: (c) 2026 Simon Ruetzler<br>"
+      echo "Info: <a href='https://github.com/sruetzler/HB-SR-Devices-AddOn'>Projekt auf Github</a>"
     ;;
 
     *)
