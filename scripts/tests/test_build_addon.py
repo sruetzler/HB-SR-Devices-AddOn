@@ -42,8 +42,8 @@ class AddonBuildTest(unittest.TestCase):
             self.assertIn("addon/www/config/img/devices/50/hb-sr-hy_thumb.png", archive.getnames())
             self.assertTrue(all(not name.startswith("/") and ".." not in Path(name).parts for name in archive.getnames()))
             update = archive.extractfile("addon/update-check.cgi").read().decode()
-            self.assertIn("/main/CCU_RM/src/addon/VERSION", update)
-            self.assertIn("/main/CCU_RM/hb-sr-devices-addon.tgz", update)
+            self.assertIn("/repos/sruetzler/HB-SR-Devices-AddOn/releases/latest", update)
+            self.assertIn("hb-sr-devices-addon.tgz", update)
         self.assertEqual(result.read_bytes(), (self.root / "CCU_RM" / builder.PACKAGE).read_bytes())
         self.assertEqual((self.root / "addon/VERSION").read_bytes(), (self.root / "CCU_RM/src/addon/VERSION").read_bytes())
 

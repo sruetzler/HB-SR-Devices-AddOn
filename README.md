@@ -67,10 +67,18 @@ Für eine neue Addon-Version:
    `CCU_RM/src/addon/VERSION` sowie `CCU_RM/hb-sr-devices-addon.tgz` committen.
 4. Nach Freigabe nach `main` im bisherigen GitHub-Repository
    `sruetzler/HB-SR-Devices-AddOn` pushen.
+5. Ein GitHub-Release mit passendem Versions-Tag (z. B. `v0.04` für
+   `addon/VERSION` = `0.04`) veröffentlichen und als neuestes Release markieren.
+   `dist/hb-sr-devices-addon.tgz` als Release-Asset anhängen, optional auch
+   die zugehörige `.sha256`-Datei. Entwürfe und Vorabversionen werden ignoriert.
 
 Die beiden erzeugten Dateien unter `CCU_RM/` sind bewusst weiter in Git: Bereits
-installierte Addons fragen genau diese GitHub-Pfade ab. Nicht von Hand ändern.
-Der Build veröffentlicht nichts; erst ein Push stellt die neue Version bereit.
+installierte ältere Addons fragen genau diese GitHub-Pfade ab. Nicht von Hand ändern.
+Nach Installation des umgestellten Addons wird die Version über die GitHub-API
+`releases/latest` ermittelt. Der Download-Button lädt das Paket aus diesem
+Release. Fehlt das Asset oder ist GitHub nicht erreichbar, wird `n/a` gemeldet.
+Der Build veröffentlicht nichts; für den neuen Update-Ablauf muss ein Release
+mit dem Paket veröffentlicht werden.
 
 Das Paket wird wie bisher unter **Einstellungen → Systemsteuerung → Zusatzsoftware**
 installiert. Die Geräteidentität von HY (`HB-SR-HY`, Modell `0xFE01`) bleibt gleich.
