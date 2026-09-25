@@ -1,5 +1,5 @@
 //- -----------------------------------------------------------------------------------------------------------------------
-// HB-SR-HY v25c compact EEPROM + bounded broadcast pairing
+// HB-SR-HY v26 compact 20-HY load test + persistent TC discovery
 // Stateful BidCoS protocol proxy for an original HM-CC-TC <-> original HM-CC-VD pair.
 //
 // Logical links:
@@ -247,6 +247,26 @@ static const uint16_t LINKB_COLLISION_GUARD_MS = VD_ACK_TIMEOUT_MS;
 // Spread initial Link-B message counters over the 8-bit counter space.
 // For 20 HYs this yields 0,13,26,...,247 and avoids identical start phases.
 static const uint8_t LINKB_COUNTER_STEP = 13;
+
+// -------------------------------------------------------------------------------------------------
+// 20-HY load-test mode
+// -------------------------------------------------------------------------------------------------
+// Slots with no configured direct peer are filled with a synthetic TC/VD pair.
+// A received foreign HM-CC-TC CLIMATE_EVENT (0x58) permanently replaces one
+// synthetic TC. The discovered TC->HY association is stored in the free EEPROM
+// area behind the 20 compact AskSin++ device layouts and survives real reboots.
+//
+// The synthetic TC first transmissions are deliberately phase-shifted so a
+// reboot does not create an artificial radio burst: 5 s, 12 s, 19 s, ... .
+static const uint32_t DUMMY_TC_FIRST_START_MS = 5000UL;
+static const uint32_t DUMMY_TC_START_STEP_MS  = 7000UL; // fallback for a slot enabled later
+static const uint32_t DUMMY_TC_START_SPAN_MS  = 119000UL;
+static const uint16_t DUMMY_VD_ACK_DELAY_MS   = 100;
+static const uint8_t  DUMMY_TC_TARGET_RAW     = 0x80; // 50 % nominal target
+static const uint8_t  DUMMY_TC_COUNTER_STEP   = 29;
+
+static_assert(DUMMY_VD_ACK_DELAY_MS < VD_ACK_TIMEOUT_MS,
+              "dummy VD ACK must arrive before timeout");
 
 // All 20 logical identities are stored in flash. No Device object is duplicated
 // for these identities; the reusable config adapter temporarily binds to one.
@@ -943,8 +963,21 @@ static uint8_t effectiveFactorFromConfig(ConfigDevice& d);
 static uint8_t commandForNextVdSlot(const HySlot& s);
 static uint8_t targetForNextVdSlot(const HySlot& s);
 static void setAdapterRuntimeState(uint8_t index, ConfigDevice& d);
+static bool isOwnHyId(const HMID& id);
+static bool handleLoadTestForeignTc(Message& msg);
+static bool serviceDummyTcGenerator();
+static bool serviceSyntheticVdAck(uint8_t index, uint32_t now);
+static bool handleVdAckStatus(uint8_t index, Message& msg);
 
 HySlot hySlots[LOGICAL_HY_COUNT] __attribute__((section(".noinit")));
+
+// Load-test state is normal BSS on purpose. After any application restart it
+// is reconstructed from the persistent TC map plus the normal AskSin++ peers.
+static uint8_t  testTcMap[LOGICAL_HY_COUNT][3];
+static uint32_t testSlotMask = 0;       // no configured TC/VD peers -> test slot
+static uint32_t testRealTcMask = 0;     // test slot currently uses discovered real TC
+static uint32_t dummyTcNextMs[LOGICAL_HY_COUNT];
+static uint8_t  dummyTcCounter[LOGICAL_HY_COUNT];
 
 // Exactly one physical radio means exactly one unsolicited CCU status transaction
 // can be in flight.
@@ -979,9 +1012,26 @@ static bool configDeviceAttached = false;
 // before the four-byte v25 layout marker at 0x3FC..0x3FF.
 static const uint16_t DEVICE_EEPROM_BASE = 0x020;
 static const uint16_t DEVICE_EEPROM_STRIDE = 46;
+
+// Actual HY20 user-storage start is 0x3B4 (=948). The 72 bytes up to the
+// v25 layout marker are used by the load-test TC discovery map:
+//   0x3B4..0x3EF : 20 x 3-byte discovered TC IDs
+//   0x3F0..0x3F3 : load-test map magic
+//   0x3F4..0x3FB : spare
+//   0x3FC..0x3FF : existing v25 layout magic
+// FFFFFF means "still use the synthetic dummy TC for this logical HY".
+static const uint16_t TEST_TC_EEPROM_BASE = 0x3B4;
+static const uint16_t TEST_TC_MAGIC_ADDR  = 0x3F0;
+static const uint8_t TEST_TC_MAGIC[4] = { 'H','Y','T','1' };
+
 static const uint16_t HY25_LAYOUT_MAGIC_ADDR = 0x3FC;
 static const uint8_t HY25_LAYOUT_MAGIC[4] = { 'H','Y','2','5' };
 
+static_assert(TEST_TC_EEPROM_BASE + (uint16_t)LOGICAL_HY_COUNT * 3U
+              <= TEST_TC_MAGIC_ADDR,
+              "load-test TC map overlaps its magic");
+static_assert(TEST_TC_MAGIC_ADDR + 4U <= HY25_LAYOUT_MAGIC_ADDR,
+              "load-test TC map overlaps v25 layout marker");
 static_assert(DEVICE_EEPROM_BASE +
               (uint16_t)LOGICAL_HY_COUNT * DEVICE_EEPROM_STRIDE
               <= HY25_LAYOUT_MAGIC_ADDR,
@@ -1019,6 +1069,131 @@ static bool idBytesEqual(const uint8_t in[3], const HMID& id) {
 
 static bool same3(const uint8_t a[3], const uint8_t b[3]) {
   return a[0] == b[0] && a[1] == b[1] && a[2] == b[2];
+}
+
+static bool idBytesAllFF(const uint8_t in[3]) {
+  return in[0] == 0xff && in[1] == 0xff && in[2] == 0xff;
+}
+
+static HMID dummyTcId(uint8_t index) {
+  return HMID(0xfd, 0x10, (uint8_t)(index + 1U));
+}
+
+static HMID dummyVdId(uint8_t index) {
+  return HMID(0xfd, 0x20, (uint8_t)(index + 1U));
+}
+
+static bool maskHas(uint32_t mask, uint8_t index) {
+  return (mask & ((uint32_t)1UL << index)) != 0;
+}
+
+static void maskSet(uint32_t& mask, uint8_t index, bool on) {
+  const uint32_t bit = ((uint32_t)1UL << index);
+  if (on) mask |= bit;
+  else mask &= ~bit;
+}
+
+static uint16_t testTcEepromAddr(uint8_t index) {
+  return TEST_TC_EEPROM_BASE + (uint16_t)index * 3U;
+}
+
+static bool testTcMagicValid() {
+  for (uint8_t i = 0; i < 4; ++i) {
+    if (storage().getByte(TEST_TC_MAGIC_ADDR + i) != TEST_TC_MAGIC[i]) return false;
+  }
+  return true;
+}
+
+static void writeTestTcMagic() {
+  for (uint8_t i = 0; i < 4; ++i) {
+    storage().setByte(TEST_TC_MAGIC_ADDR + i, TEST_TC_MAGIC[i]);
+  }
+}
+
+static void initializeTestTcMap(bool forceReset) {
+  const bool init = forceReset || !testTcMagicValid();
+
+  if (init) {
+    for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
+      testTcMap[i][0] = 0xff;
+      testTcMap[i][1] = 0xff;
+      testTcMap[i][2] = 0xff;
+      const uint16_t a = testTcEepromAddr(i);
+      storage().setByte(a + 0, 0xff);
+      storage().setByte(a + 1, 0xff);
+      storage().setByte(a + 2, 0xff);
+    }
+    writeTestTcMagic();
+    storage().store();
+    Serial.println(F("LT INIT"));
+    return;
+  }
+
+  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
+    const uint16_t a = testTcEepromAddr(i);
+    testTcMap[i][0] = storage().getByte(a + 0);
+    testTcMap[i][1] = storage().getByte(a + 1);
+    testTcMap[i][2] = storage().getByte(a + 2);
+  }
+}
+
+static void persistTestTcMap(uint8_t index) {
+  const uint16_t a = testTcEepromAddr(index);
+  storage().setByte(a + 0, testTcMap[index][0]);
+  storage().setByte(a + 1, testTcMap[index][1]);
+  storage().setByte(a + 2, testTcMap[index][2]);
+  storage().store();
+}
+
+static void clearTestTcMap(uint8_t index) {
+  if (idBytesAllFF(testTcMap[index])) return;
+  testTcMap[index][0] = 0xff;
+  testTcMap[index][1] = 0xff;
+  testTcMap[index][2] = 0xff;
+  persistTestTcMap(index);
+}
+
+static uint8_t loadTestOrdinal(uint8_t index) {
+  uint8_t ordinal = 0;
+  for (uint8_t i = 0; i < index; ++i) {
+    if (maskHas(testSlotMask, i)) ++ordinal;
+  }
+  return ordinal;
+}
+
+static void armDummyTcIfNeeded(uint8_t index) {
+  if (!maskHas(testSlotMask, index) || maskHas(testRealTcMask, index)) {
+    dummyTcNextMs[index] = 0;
+    return;
+  }
+  if (dummyTcNextMs[index] != 0) return;
+
+  const uint8_t ordinal = loadTestOrdinal(index);
+  dummyTcCounter[index] = (uint8_t)(index * DUMMY_TC_COUNTER_STEP);
+  dummyTcNextMs[index] = millis() + DUMMY_TC_FIRST_START_MS
+                       + (uint32_t)ordinal * DUMMY_TC_START_STEP_MS;
+}
+
+static void armAllDummyTcSchedules() {
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
+    if (maskHas(testSlotMask, i) && !maskHas(testRealTcMask, i)) ++count;
+    dummyTcNextMs[i] = 0;
+  }
+
+  if (count == 0) return;
+
+  const uint32_t step =
+      count > 1 ? (DUMMY_TC_START_SPAN_MS / (uint32_t)(count - 1U)) : 0UL;
+  const uint32_t first = millis() + DUMMY_TC_FIRST_START_MS;
+  uint8_t ordinal = 0;
+
+  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
+    if (!maskHas(testSlotMask, i) || maskHas(testRealTcMask, i)) continue;
+    dummyTcCounter[i] = (uint8_t)(i * DUMMY_TC_COUNTER_STEP);
+    dummyTcNextMs[i] = first + (uint32_t)ordinal * step;
+    ++ordinal;
+  }
 }
 
 static uint16_t deviceEepromAddr(uint8_t index) {
@@ -1103,7 +1278,7 @@ static bool eepromLayoutSafe() {
   ConfigDevice* last = activateConfigDevice(LOGICAL_HY_COUNT - 1U, false);
   if (last == nullptr) return false;
 
-  return last->getUserStorage().getAddress() <= HY25_LAYOUT_MAGIC_ADDR;
+  return last->getUserStorage().getAddress() <= TEST_TC_EEPROM_BASE;
 }
 
 // v25 is intentionally a clean layout transition. If the v25 magic is absent,
@@ -1219,6 +1394,32 @@ static void syncSlotFromConfig(uint8_t index) {
   firstPeer(*d, THERM_CHANNEL, newTc);
   firstPeer(*d, VALVE_CHANNEL, newVd);
 
+  // Load-test substitution is only allowed on a completely free logical HY.
+  // The instant either real direct peer is configured, the slot is removed
+  // from the test pool and any old discovered-TC assignment for that slot is
+  // released for future discovery.
+  const bool configuredDirectPeer = idBytesValid(newTc) || idBytesValid(newVd);
+  if (!configuredDirectPeer) {
+    maskSet(testSlotMask, index, true);
+
+    if (!idBytesAllFF(testTcMap[index])) {
+      memcpy(newTc, testTcMap[index], 3);
+      maskSet(testRealTcMask, index, true);
+    }
+    else {
+      hmidToBytes(dummyTcId(index), newTc);
+      maskSet(testRealTcMask, index, false);
+    }
+
+    hmidToBytes(dummyVdId(index), newVd);
+  }
+  else {
+    maskSet(testSlotMask, index, false);
+    maskSet(testRealTcMask, index, false);
+    dummyTcNextMs[index] = 0;
+    clearTestTcMap(index);
+  }
+
   const uint8_t newFactor = effectiveFactorFromConfig(*d);
   const bool factorChanged = s.factor != newFactor;
   const bool masterChanged = !same3(s.master, newMaster);
@@ -1258,6 +1459,8 @@ static void syncSlotFromConfig(uint8_t index) {
     s.collisionDebt = 0;
     s.missCount = 0;
   }
+
+  armDummyTcIfNeeded(index);
 }
 
 static void initColdSlots() {
@@ -1275,12 +1478,21 @@ static void initColdSlots() {
   }
 }
 
-static uint32_t linkBIntervalMs(uint8_t index, uint8_t counter) {
-  uint32_t address = 0xFE0100UL | (uint32_t)(index + 1U);
+static uint32_t intervalForAddressMs(uint32_t address, uint8_t counter) {
   uint32_t seed = (address << 8) | counter;
   uint32_t result = (uint32_t)(seed * 1103515245UL + 12345UL);
   result >>= 16;
   return (480UL + (result & 0xffUL)) * 250UL;
+}
+
+static uint32_t dummyTcIntervalMs(uint8_t index, uint8_t counter) {
+  const uint32_t address = 0xFD1000UL | (uint32_t)(index + 1U);
+  return intervalForAddressMs(address, counter);
+}
+
+static uint32_t linkBIntervalMs(uint8_t index, uint8_t counter) {
+  const uint32_t address = 0xFE0100UL | (uint32_t)(index + 1U);
+  return intervalForAddressMs(address, counter);
 }
 
 static void restoreSlotsAfterSoftRestart(uint32_t oldMillis) {
@@ -1379,6 +1591,20 @@ static void noteValidVdRx(uint8_t index) {
 static void serviceVdWatchdog(uint8_t index, uint32_t now) {
   HySlot& s = hySlots[index];
   if (!idBytesValid(s.vdPeer)) return;
+
+  // Load-test slots always use a synthetic dummy VD. A dummy VD cannot be
+  // physically lost. In particular, a persisted real TC may simply not have
+  // transmitted since boot yet; that must not make its synthetic VD "LOST"
+  // and suppress the first later TC response.
+  //
+  // Synthetic ACK_STATUS frames are still generated after every real Link-B
+  // radio TX and pass through handleVdAckStatus(), so the normal ACK path is
+  // still exercised. We only disable the communication-loss watchdog here.
+  if (maskHas(testSlotMask, index)) {
+    s.flags &= ~HYS_VD_LOST;
+    s.lastVdSeenMs = now;
+    return;
+  }
 
   if (s.lastVdSeenMs == 0) s.lastVdSeenMs = now;
 
@@ -1532,6 +1758,157 @@ static bool handleTcClimate(uint8_t index, Message& msg) {
   return true;
 }
 
+static int8_t findAssignedTestTc(const HMID& sender) {
+  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
+    if (!maskHas(testSlotMask, i) || !maskHas(testRealTcMask, i)) continue;
+    if (idBytesEqual(hySlots[i].tcPeer, sender)) return (int8_t)i;
+  }
+  return -1;
+}
+
+static bool belongsToConfiguredTc(const HMID& sender) {
+  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
+    if (maskHas(testSlotMask, i)) continue;
+    if (idBytesEqual(hySlots[i].tcPeer, sender)) return true;
+  }
+  return false;
+}
+
+static int8_t firstDummyTestSlot() {
+  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
+    if (maskHas(testSlotMask, i) && !maskHas(testRealTcMask, i)) {
+      return (int8_t)i;
+    }
+  }
+  return -1;
+}
+
+static void printHexByte2(uint8_t b) {
+  if (b < 0x10) Serial.print('0');
+  Serial.print(b, HEX);
+}
+
+static void printHmidSerial(const HMID& id) {
+  printHexByte2(id.id0());
+  printHexByte2(id.id1());
+  printHexByte2(id.id2());
+}
+
+static bool handleLoadTestForeignTc(Message& msg) {
+  if (msg.type() != TYPE_CLIMATE_EVENT || msg.length() < 0x0b) return false;
+  if (isOwnHyId(msg.from())) return false;
+
+  int8_t slot = findAssignedTestTc(msg.from());
+  bool newlyAssigned = false;
+
+  if (slot < 0) {
+    // Never steal a TC that belongs to one of the genuinely configured HYs.
+    if (belongsToConfiguredTc(msg.from())) return false;
+
+    slot = firstDummyTestSlot();
+    if (slot < 0) return false;
+
+    const uint8_t index = (uint8_t)slot;
+    hmidToBytes(msg.from(), testTcMap[index]);
+    memcpy(hySlots[index].tcPeer, testTcMap[index], 3);
+    maskSet(testRealTcMask, index, true);
+    dummyTcNextMs[index] = 0;
+    newlyAssigned = true;
+
+    Serial.print(F("TC+ "));
+    Serial.print(index + 1);
+    Serial.print(' ');
+    printHmidSerial(msg.from());
+    Serial.println();
+  }
+
+  const uint8_t index = (uint8_t)slot;
+  const bool handled = handleTcClimate(index, msg);
+
+  // Persist only after the timing-critical ~95 ms TC response has already
+  // been transmitted. Discovery happens only once per real TC.
+  if (newlyAssigned) persistTestTcMap(index);
+  return handled;
+}
+
+static bool serviceDummyTcGenerator() {
+  const uint32_t now = millis();
+  int8_t due = -1;
+
+  // At most one synthetic TC event is generated per loop pass. Initial phases
+  // are already 7 s apart, so this normally selects exactly one device.
+  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
+    if (!maskHas(testSlotMask, i) || maskHas(testRealTcMask, i)) continue;
+    if (dummyTcNextMs[i] == 0 || !timeReached(now, dummyTcNextMs[i])) continue;
+
+    if (due < 0 ||
+        (int32_t)(dummyTcNextMs[i] - dummyTcNextMs[(uint8_t)due]) < 0) {
+      due = (int8_t)i;
+    }
+  }
+
+  if (due < 0) return false;
+
+  const uint8_t index = (uint8_t)due;
+  HySlot& s = hySlots[index];
+  const uint8_t counter = dummyTcCounter[index];
+  const uint8_t command =
+      (s.flags & HYS_HAVE_TC_TARGET) ? CMD_REFRESH : CMD_NEW_TARGET;
+
+  const uint32_t interval =
+      calibrateLinkBInterval(dummyTcIntervalMs(index, counter));
+  dummyTcNextMs[index] += interval;
+  dummyTcCounter[index] = (uint8_t)(counter + 1U);
+
+  Message synthetic;
+  synthetic.init(0x0b,
+                 counter,
+                 TYPE_CLIMATE_EVENT,
+                 CTRL_TC_TO_VD,
+                 command,
+                 DUMMY_TC_TARGET_RAW);
+  synthetic.from(bytesToHmid(s.tcPeer));
+  synthetic.to(hyId(index));
+
+  Serial.print(F("t")); Serial.print(index + 1);
+  Serial.print(' '); Serial.println(counter, HEX);
+  return handleTcClimate(index, synthetic);
+}
+
+static bool serviceSyntheticVdAck(uint8_t index, uint32_t now) {
+  HySlot& s = hySlots[index];
+  if (!maskHas(testSlotMask, index)) return false;
+  if ((s.flags & HYS_AWAIT_VD_ACK) == 0) return false;
+  if (!idBytesEqual(s.vdPeer, dummyVdId(index))) return false;
+
+  const uint32_t due =
+      s.vdAckDeadlineMs - (uint32_t)(VD_ACK_TIMEOUT_MS - DUMMY_VD_ACK_DELAY_MS);
+  if (!timeReached(now, due)) return false;
+  // If the main loop was blocked beyond the real ACK timeout, do not let the
+  // synthetic device rescue an exchange that should already count as missed.
+  if (timeReached(now, s.vdAckDeadlineMs)) return false;
+
+  uint16_t percent100 = decodeTcTargetPercent100(s.lastSentVdTargetRaw);
+  uint8_t positionRaw = encodeVdPositionPercent100(percent100);
+
+  Message ack;
+  ack.init(0x0e,
+           s.awaitingVdCounter,
+           TYPE_RESPONSE,
+           0x82,
+           RESPONSE_ACK_STATUS,
+           VD_CHANNEL);
+  ack.from(dummyVdId(index));
+  ack.to(hyId(index));
+  ack.data()[0] = positionRaw;
+  ack.data()[1] = 0x00;
+  ack.data()[2] = 0x40;
+
+  Serial.print(F("d")); Serial.print(index + 1);
+  Serial.print(' '); Serial.println(s.awaitingVdCounter, HEX);
+  return handleVdAckStatus(index, ack);
+}
+
 static bool handleVdAckStatus(uint8_t index, Message& msg) {
   HySlot& s = hySlots[index];
   if (!idBytesEqual(s.vdPeer, msg.from())) return false;
@@ -1589,6 +1966,17 @@ static bool handleVdRuntime(uint8_t index, Message& msg) {
 static void serviceSlotRuntime(uint8_t index) {
   HySlot& s = hySlots[index];
   uint32_t now = millis();
+
+  // Dummy VDs do not exist on air. Inject their ACK_STATUS into exactly the
+  // same handler as a real VD, but only after the Link-B packet was really
+  // transmitted through the CC1101.
+  //
+  // IMPORTANT: handleVdAckStatus()->noteValidVdRx() stores a fresh millis()
+  // value in lastVdSeenMs. Refresh 'now' afterwards; otherwise the watchdog
+  // below can compare an older 'now' against a slightly newer lastVdSeenMs.
+  // The unsigned subtraction would then wrap and falsely report VD LOST.
+  serviceSyntheticVdAck(index, now);
+  now = millis();
 
   if ((s.flags & HYS_AWAIT_VD_ACK) && timeReached(now, s.vdAckDeadlineMs)) {
     s.flags &= ~HYS_AWAIT_VD_ACK;
@@ -2192,6 +2580,14 @@ static bool dispatchSharedRadioMessage(Message& msg) {
     return findSlotByTcPeer(msg.from()) >= 0;
   }
 
+  // A foreign real TC still addresses its own original VD. For load testing,
+  // one free logical HY adopts that TC persistently and replies using the HY's
+  // own FE01xx identity. The original TC may ignore the extra response; any
+  // resulting RF collision is intentional for this test build.
+  if (msg.type() == TYPE_CLIMATE_EVENT) {
+    return handleLoadTestForeignTc(msg);
+  }
+
   return false;
 }
 
@@ -2212,7 +2608,7 @@ static bool pollSharedRadio() {
 void setup() {
   DINIT(57600, ASKSIN_PLUS_PLUS_IDENTIFIER);
   Serial.begin(57600);
-  Serial.println(F("HY v25c C20 E46"));
+  Serial.println(F("HY v26b LOAD20 E46"));
 
   const bool softRecovery = (hySoftWatchdogMagic == HY_SOFT_WDT_MAGIC)
                          && (hyResetCause == 0);
@@ -2220,6 +2616,7 @@ void setup() {
   const uint8_t recoveryRadioStage = hyRecoveredRadioStage;
 
   bool first = ensurePersistentLayout();
+  initializeTestTcMap(first);
 
   // Initialize the one physical HAL. HY1 remains at base 0x020, so its
   // four-byte radio StorageConfig stays at the traditional 0x01c..0x01f area.
@@ -2252,6 +2649,12 @@ void setup() {
   else {
     initColdSlots();
   }
+
+  // Re-spread only the still-synthetic TCs across roughly two minutes. With
+  // all 18 free test slots this is exactly 7 s between first transmissions;
+  // after real TCs have been learned, the remaining dummies are spread over
+  // the same time span instead of bunching together after a reboot.
+  armAllDummyTcSchedules();
 
   pinMode(CONFIG_BUTTON_PIN, INPUT_PULLUP);
   if (digitalRead(CONFIG_BUTTON_PIN) == LOW) {
@@ -2289,6 +2692,22 @@ void setup() {
     Serial.print(F(" M")); Serial.println(idBytesValid(hySlots[i].master) ? 1 : 0);
   }
 
+  uint8_t ltReal = 0;
+  uint8_t ltDummy = 0;
+  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
+    if (!maskHas(testSlotMask, i)) continue;
+    if (maskHas(testRealTcMask, i)) ++ltReal;
+    else ++ltDummy;
+  }
+  Serial.print(F("LT R")); Serial.print(ltReal);
+  Serial.print(F(" D")); Serial.println(ltDummy);
+  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
+    if (!maskHas(testSlotMask, i) || !maskHas(testRealTcMask, i)) continue;
+    Serial.print(F("TC= ")); Serial.print(i + 1);
+    Serial.print(' '); printHmidSerial(bytesToHmid(hySlots[i].tcPeer));
+    Serial.println();
+  }
+
   hal.battery.init(seconds2ticks(60UL * 60), sysclock);
 
   enableHySoftWatchdog();
@@ -2312,6 +2731,7 @@ void loop() {
 
   pollSharedRadio();
   servicePairingSession();
+  serviceDummyTcGenerator();
 
   for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
     // Completely empty HYs need no runtime work.
