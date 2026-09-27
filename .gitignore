@@ -7,3 +7,10 @@ __pycache__/
 .vscode/launch.json
 .vscode/ipch/
 CCU_RM/hb-sr-devices-addon.tgz
+
+# HB-SR-HY
+/devices/HB-SR-HY/.pio
+/devices/HB-SR-HY/.vscode/.browse.c_cpp.db*
+/devices/HB-SR-HY/.vscode/c_cpp_properties.json
+/devices/HB-SR-HY/.vscode/launch.json
+/devices/HB-SR-HY/.vscode/ipch
