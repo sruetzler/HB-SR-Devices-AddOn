@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1900" height="1100" viewBox="0 0 1900 1100">
+<style>
+text{font-family:DejaVu Sans,Arial,sans-serif;fill:#111}
+.title{font-size:30px;font-weight:700}
+.sub{font-size:16px}
+.h1{font-size:20px;font-weight:700}
+.t{font-size:15px}
+.ts{font-size:13px}
+.pin{font-size:14px}
+.net{font-size:15px;font-weight:700}
+.box{fill:#fff;stroke:#111;stroke-width:2.2}
+.part{fill:#f7f7f7;stroke:#111;stroke-width:2}
+.w{stroke:#111;stroke-width:2.5;fill:none}
+.thin{stroke:#111;stroke-width:1.5;fill:none}
+.nc{font-size:14px;font-weight:700}
+</style>
+<rect width="100%" height="100%" fill="white"/>
+<text class="title" x="50" y="45" text-anchor="start">HY – Schaltplan 3/3: ISP und FT232RL-Debuganschluss</text>
+<text class="sub" x="50" y="75" text-anchor="start">Rev. F – 1×6-UART-Leiste passend zum vorhandenen FT232RL-Adapter.</text>
+<rect class="box" x="55" y="120" width="1790" height="395" rx="8"/>
+<text class="h1" x="80" y="155" text-anchor="start">ISP – Programmieren / Fuses / Bootloader</text>
+<rect class="part" x="95" y="205" width="350" height="250" rx="8"/>
+<text class="h1" x="270" y="240" text-anchor="middle">ATmega328P-PU</text>
+<text class="pin" x="420" y="290" text-anchor="end">Pin 18 / D12   MISO</text>
+<line class="w" x1="445" y1="285" x2="650" y2="285"/>
+<text class="pin" x="420" y="340" text-anchor="end">Pin 19 / D13   SCK</text>
+<line class="w" x1="445" y1="335" x2="650" y2="335"/>
+<text class="pin" x="420" y="390" text-anchor="end">Pin 1          RESET</text>
+<line class="w" x1="445" y1="385" x2="650" y2="385"/>
+<text class="pin" x="420" y="440" text-anchor="end">Pin 17 / D11   MOSI</text>
+<line class="w" x1="445" y1="435" x2="650" y2="435"/>
+<text class="h1" x="800" y="205" text-anchor="middle">Signal</text>
+<text class="net" x="800" y="290" text-anchor="middle">MISO</text>
+<line class="w" x1="650" y1="285" x2="950" y2="285"/>
+<text class="net" x="800" y="340" text-anchor="middle">SCK</text>
+<line class="w" x1="650" y1="335" x2="950" y2="335"/>
+<text class="net" x="800" y="390" text-anchor="middle">RESET</text>
+<line class="w" x1="650" y1="385" x2="950" y2="385"/>
+<text class="net" x="800" y="440" text-anchor="middle">MOSI</text>
+<line class="w" x1="650" y1="435" x2="950" y2="435"/>
+<rect class="part" x="1030" y="190" width="390" height="285" rx="8"/>
+<text class="h1" x="1225" y="225" text-anchor="middle">HY: ISP 2×3</text>
+<rect class="part" x="1058" y="275" width="114" height="40" rx="3"/>
+<text class="ts" x="1115" y="300" text-anchor="middle">1 MISO</text>
+<rect class="part" x="1268" y="275" width="114" height="40" rx="3"/>
+<text class="ts" x="1325" y="300" text-anchor="middle">2 +3V3</text>
+<rect class="part" x="1058" y="335" width="114" height="40" rx="3"/>
+<text class="ts" x="1115" y="360" text-anchor="middle">3 SCK</text>
+<rect class="part" x="1268" y="335" width="114" height="40" rx="3"/>
+<text class="ts" x="1325" y="360" text-anchor="middle">4 MOSI</text>
+<rect class="part" x="1058" y="395" width="114" height="40" rx="3"/>
+<text class="ts" x="1115" y="420" text-anchor="middle">5 RESET</text>
+<rect class="part" x="1268" y="395" width="114" height="40" rx="3"/>
+<text class="ts" x="1325" y="420" text-anchor="middle">6 GND</text>
+<line class="w" x1="950" y1="285" x2="1058" y2="285"/>
+<polyline class="w" points="950,335 990,335 990,355 1058,355"/>
+<polyline class="w" points="950,385 1010,385 1010,415 1058,415"/>
+<polyline class="w" points="950,435 1000,435 1000,355 1268,355"/>
+<text class="net" x="1450" y="295" text-anchor="start">Pin 2 → +3,3 V</text>
+<text class="net" x="1450" y="355" text-anchor="start">Pin 6 → GND</text>
+<text class="t" x="1450" y="415" text-anchor="start">Pololu ISP-Kabel direkt aufstecken</text>
+<rect class="box" x="55" y="560" width="1790" height="455" rx="8"/>
+<text class="h1" x="80" y="595" text-anchor="start">Serielle Debug-Schnittstelle – passend zum vorhandenen FT232RL-Modul</text>
+<rect class="part" x="95" y="650" width="350" height="210" rx="8"/>
+<text class="h1" x="270" y="685" text-anchor="middle">ATmega328P-PU</text>
+<text class="pin" x="420" y="745" text-anchor="end">Pin 3 / D1   TX</text>
+<line class="w" x1="445" y1="740" x2="700" y2="740"/>
+<text class="pin" x="420" y="815" text-anchor="end">Pin 2 / D0   RX</text>
+<line class="w" x1="445" y1="810" x2="700" y2="810"/>
+<rect class="part" x="790" y="645" width="790" height="250" rx="8"/>
+<text class="h1" x="1185" y="680" text-anchor="middle">HY: 1×6 FT232RL-Steckerleiste, RM 2,54 mm</text>
+<text class="ts" x="1185" y="707" text-anchor="middle">Ansicht von oben auf die HY; FT232RL wird direkt aufgesteckt</text>
+<rect class="part" x="827" y="745" width="76" height="55" rx="3"/>
+<text class="ts" x="865" y="767" text-anchor="middle">1</text>
+<text class="net" x="865" y="790" text-anchor="middle">DTR</text>
+<text class="ts" x="865" y="835" text-anchor="middle">NC</text>
+<rect class="part" x="952" y="745" width="76" height="55" rx="3"/>
+<text class="ts" x="990" y="767" text-anchor="middle">2</text>
+<text class="net" x="990" y="790" text-anchor="middle">RXD</text>
+<text class="ts" x="990" y="835" text-anchor="middle">→ ATmega TX</text>
+<rect class="part" x="1077" y="745" width="76" height="55" rx="3"/>
+<text class="ts" x="1115" y="767" text-anchor="middle">3</text>
+<text class="net" x="1115" y="790" text-anchor="middle">TXD</text>
+<text class="ts" x="1115" y="835" text-anchor="middle">→ ATmega RX</text>
+<rect class="part" x="1202" y="745" width="76" height="55" rx="3"/>
+<text class="ts" x="1240" y="767" text-anchor="middle">4</text>
+<text class="net" x="1240" y="790" text-anchor="middle">VCC</text>
+<text class="ts" x="1240" y="835" text-anchor="middle">NC</text>
+<rect class="part" x="1327" y="745" width="76" height="55" rx="3"/>
+<text class="ts" x="1365" y="767" text-anchor="middle">5</text>
+<text class="net" x="1365" y="790" text-anchor="middle">CTS</text>
+<text class="ts" x="1365" y="835" text-anchor="middle">NC</text>
+<rect class="part" x="1452" y="745" width="76" height="55" rx="3"/>
+<text class="ts" x="1490" y="767" text-anchor="middle">6</text>
+<text class="net" x="1490" y="790" text-anchor="middle">GND</text>
+<text class="ts" x="1490" y="835" text-anchor="middle">→ GND</text>
+<polyline class="w" points="700,740 760,740 760,725 990,725 990,745"/>
+<polyline class="w" points="700,810 740,810 740,870 1115,870 1115,800"/>
+<line class="w" x1="1490" y1="800" x2="1490" y2="900"/>
+<text class="net" x="1490" y="930" text-anchor="middle">GND</text>
+<text class="nc" x="865" y="875" text-anchor="middle">nicht verbinden</text>
+<text class="nc" x="1240" y="875" text-anchor="middle">nicht verbinden</text>
+<text class="nc" x="1365" y="875" text-anchor="middle">nicht verbinden</text>
+<rect class="part" x="1620" y="650" width="185" height="245" rx="8"/>
+<text class="h1" x="1712" y="685" text-anchor="middle">FT232RL</text>
+<text class="t" x="1712" y="715" text-anchor="middle">vorhandener</text>
+<text class="t" x="1712" y="740" text-anchor="middle">USB-UART</text>
+<text class="t" x="1712" y="785" text-anchor="middle">direkt auf</text>
+<text class="t" x="1712" y="810" text-anchor="middle">1×6-Leiste</text>
+<text class="h1" x="80" y="965" text-anchor="start">Wichtig: DTR, VCC und CTS bleiben auf der HY unbeschaltet. Die HY wird weiterhin separat über Micro-USB versorgt.</text>
+<text class="h1" x="80" y="995" text-anchor="start">Debug: Adapter-RXD empfängt HY-TX; Adapter-TXD sendet auf HY-RX. Flashen erfolgt über ISP.</text>
+</svg>
