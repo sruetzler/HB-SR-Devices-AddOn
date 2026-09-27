@@ -4,7 +4,7 @@
 bisherigen HB-SR-Devices-AddOn-Projekts. Der installierte Name bleibt unverändert.
 Die Update-Abfrage verwendet das neueste veröffentlichte GitHub-Release und
 lädt dessen Asset `hb-sr-devices-addon.tgz` herunter. Release-Tags müssen der
-Version in `VERSION` entsprechen, optional mit `v` davor (z. B. `v0.04`).
+Version in `VERSION` entsprechen, optional mit `v` davor (z. B. `v1.0` für Version `1.0`).
 Entwürfe und Vorabversionen werden nicht angeboten. Fehlt das Paket oder
 schlägt die Abfrage fehl, meldet die Versionsabfrage `n/a`.
 
@@ -19,3 +19,5 @@ sh ../scripts/build-addon.sh
 
 Das Paket liegt anschließend unter `../dist/hb-sr-devices-addon.tgz`.
 Die Firmware des Geräts wird durch die Addon-Installation nicht aktualisiert.
+
+Den vollständigen Ablauf beschreibt [Versionen und Veröffentlichung](../README.md#versionen-und-veröffentlichung).

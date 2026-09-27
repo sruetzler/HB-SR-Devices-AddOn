@@ -35,7 +35,7 @@ class AddonBuildTest(unittest.TestCase):
         expected = self.root / "devices/HB-SR-HY/ccu/hb-sr-hy.xml"
         with tarfile.open(result) as archive:
             self.assertEqual(archive.extractfile("addon/firmware/rftypes/hb-sr-hy.xml").read(), expected.read_bytes())
-            self.assertEqual(archive.extractfile("addon/VERSION").read(), (self.root / "addon/VERSION").read_bytes())
+            self.assertEqual(archive.extractfile("addon/VERSION").read(), (self.root / "addon/VERSION").read_text().strip().encode() + b"\n")
             for name in ("update_script", "rc.d/hb-sr-devices-addon", "addon/install_hb-sr-hy", "addon/uninstall_hb-sr-hy", "addon/update-check.cgi"):
                 self.assertEqual(archive.getmember(name).mode, 0o755)
             self.assertEqual(archive.getmember("addon/firmware/rftypes/hb-sr-hy.xml").mode, 0o644)
@@ -45,7 +45,7 @@ class AddonBuildTest(unittest.TestCase):
             self.assertIn("/repos/sruetzler/HB-SR-Devices-AddOn/releases/latest", update)
             self.assertIn("hb-sr-devices-addon.tgz", update)
         self.assertEqual(result.read_bytes(), (self.root / "CCU_RM" / builder.PACKAGE).read_bytes())
-        self.assertEqual((self.root / "addon/VERSION").read_bytes(), (self.root / "CCU_RM/src/addon/VERSION").read_bytes())
+        self.assertEqual((self.root / "addon/VERSION").read_text().strip().encode() + b"\n", (self.root / "CCU_RM/src/addon/VERSION").read_bytes())
 
     def test_second_device_is_included_automatically(self):
         ccu = self.second_device()

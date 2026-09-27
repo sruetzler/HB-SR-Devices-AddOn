@@ -54,31 +54,43 @@ Gerätetyp-IDs müssen eindeutig sein. Der gemeinsame Build sammelt alle Geräte
 
 ## Versionen und Veröffentlichung
 
-Das gemeinsame Addon heißt weiterhin **hb-sr-devices-addon**. Version **0.03**
-folgt auf dessen Version **0.02**. Die Versionen `1.0.x` bezeichneten das frühere,
-separate HY-Paket; dessen aktuelle Gerätebeschreibung wurde hier übernommen.
-Die Firmware-Version jedes Geräts bleibt unabhängig von der Addon-Version.
+Die Version des gemeinsamen **HB-SR-Devices AddOns** steht in
+[`addon/VERSION`](addon/VERSION); der aktuelle Quellstand ist **1.0**.
+Der Paketname bleibt `hb-sr-devices-addon.tgz`.
+Die Firmware-Version jedes Geräts wird unabhängig davon gepflegt. Eine
+Addon-Installation aktualisiert die CCU-Gerätebeschreibungen und die
+Addon-Skripte, aber nicht die Firmware auf den Geräten.
 
 Für eine neue Addon-Version:
 
-1. `addon/VERSION` ändern.
-2. `sh scripts/build-addon.sh` ausführen und das Paket prüfen.
-3. Die Quelländerungen und die erzeugten Dateien
-   `CCU_RM/src/addon/VERSION` sowie `CCU_RM/hb-sr-devices-addon.tgz` committen.
-4. Nach Freigabe nach `main` im bisherigen GitHub-Repository
-   `sruetzler/HB-SR-Devices-AddOn` pushen.
-5. Ein GitHub-Release mit passendem Versions-Tag (z. B. `v0.04` für
-   `addon/VERSION` = `0.04`) veröffentlichen und als neuestes Release markieren.
-   `dist/hb-sr-devices-addon.tgz` als Release-Asset anhängen, optional auch
-   die zugehörige `.sha256`-Datei. Entwürfe und Vorabversionen werden ignoriert.
+1. Die gewünschte Version in `addon/VERSION` eintragen.
+2. `python3 -m unittest discover -s scripts/tests -v` und
+   `sh scripts/build-addon.sh` ausführen und das erzeugte Paket prüfen.
+3. Die Quelländerungen einschließlich der erzeugten Versionsdatei
+   `CCU_RM/src/addon/VERSION` committen und nach `main` pushen.
+4. Im GitHub-Repository `sruetzler/HB-SR-Devices-AddOn` ein Release für diesen
+   Commit erstellen. Der Tag muss zur Addon-Version passen: für `1.0` also
+   `v1.0` oder `1.0`.
+5. `dist/hb-sr-devices-addon.tgz` und optional die zugehörige
+   `dist/hb-sr-devices-addon.tgz.sha256` als Release-Assets anhängen.
+   Das Release veröffentlichen und als neuestes Release markieren.
+   Entwürfe und Vorabversionen werden bei der Update-Abfrage nicht angeboten.
 
-Die beiden erzeugten Dateien unter `CCU_RM/` sind bewusst weiter in Git: Bereits
-installierte ältere Addons fragen genau diese GitHub-Pfade ab. Nicht von Hand ändern.
-Nach Installation des umgestellten Addons wird die Version über die GitHub-API
-`releases/latest` ermittelt. Der Download-Button lädt das Paket aus diesem
-Release. Fehlt das Asset oder ist GitHub nicht erreichbar, wird `n/a` gemeldet.
-Der Build veröffentlicht nichts; für den neuen Update-Ablauf muss ein Release
-mit dem Paket veröffentlicht werden.
+Die aktuelle Update-Abfrage verwendet die GitHub-API `releases/latest`.
+Der Download-Button lädt das Paket aus diesem Release. Fehlt das passende
+Paket oder schlägt die Abfrage fehl, wird `n/a` gemeldet.
+Der lokale Build veröffentlicht nichts; ein Push allein stellt das Paket
+für diesen Update-Ablauf noch nicht bereit.
+
+Ältere installierte Addons verwenden stattdessen die bisherigen GitHub-Pfade
+unter `CCU_RM/`. Dafür erzeugt der Build zusätzlich
+`CCU_RM/src/addon/VERSION` und `CCU_RM/hb-sr-devices-addon.tgz`.
+Diese Dateien nicht von Hand bearbeiten. Die Versionsdatei ist in Git erfasst,
+das Paket wird durch `.gitignore` ausgeschlossen. Sollen auch diese älteren
+Addons das Update erhalten, muss das erzeugte Paket vor dem Commit mit
+`git add -f CCU_RM/hb-sr-devices-addon.tgz` aufgenommen und zusammen mit der
+Versionsdatei nach `main` gepusht werden. Ein Release-Asset allein bedient die
+alten Download-Pfade nicht.
 
 Das Paket wird wie bisher unter **Einstellungen → Systemsteuerung → Zusatzsoftware**
 installiert. Die Geräteidentität von HY (`HB-SR-HY`, Modell `0xFE01`) bleibt gleich.
