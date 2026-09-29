@@ -1,5 +1,5 @@
 //- -----------------------------------------------------------------------------------------------------------------------
-// HB-SR-HY v25c LT20-REAL5-RADIODIAG: REAL5 + EEPROM + periodic CC1101 state diagnostics
+// HB-SR-HY: 20 logical HY devices, real EEPROM pairings only
 // Stateful BidCoS protocol proxy for an original HM-CC-TC <-> original HM-CC-VD pair.
 //
 // Logical links:
@@ -24,10 +24,9 @@
 //   * Only normal valve positions are hydraulically scaled. Special commands are conservative/transparent.
 //
 // EEPROM / factor semantics:
-//   v25 deliberately uses a new compact EEPROM layout for all 20 logical HYs.
-//   The first v25 boot reinitializes all 20 logical devices; previous pairing
-//   and peer data are intentionally discarded so the final 20-HY teach-in path
-//   can be tested cleanly.
+//   v25 uses the compact EEPROM layout for all 20 logical HYs.
+//   If the HY25 layout marker is absent, the layout is initialized once.
+//   Afterwards all master/direct-peer assignments come exclusively from EEPROM.
 //   Register 0x02 remains "factor":
 //       factor = percentage passed to the real VD
 //       factor 100 -> reduction x = 0 %
@@ -63,7 +62,7 @@
 #include <Switch.h>
 #include <new>
 
-// Flash-saving long-test build:
+// Compact build:
 // compile out the very verbose AskSin++ diagnostics below. Critical HY events
 // are logged explicitly through Serial with short messages.
 #ifdef DPRINT
@@ -263,63 +262,6 @@ static const uint16_t LINKB_COLLISION_GUARD_MS = VD_ACK_TIMEOUT_MS;
 // Spread initial Link-B message counters over the 8-bit counter space.
 // For 20 HYs this yields 0,13,26,...,247 and avoids identical start phases.
 static const uint8_t LINKB_COUNTER_STEP = 13;
-
-// -------------------------------------------------------------------------------------------------
-// 20-HY realistic communication load test
-// -------------------------------------------------------------------------------------------------
-// HY5 and HY20 keep their genuinely configured TC/VD peers from EEPROM.
-// Seven other free HY slots use known real TCs plus a synthetic VD.
-// HY2, HY7 and HY11..HY19 use a synthetic TC plus a synthetic VD.
-// Test substitution is applied ONLY to slots without any configured direct peer.
-//
-// Fixed allocation:
-//   HY1  <- real TC 1F9103 + dummy VD
-//   HY2  <- dummy TC + dummy VD       (172987 deliberately removed)
-//   HY3  <- real TC 187A60 + dummy VD
-//   HY4  <- real TC 1A3F0D + dummy VD
-//   HY5  = real configured TC/VD (untouched)
-//   HY6  <- real TC 20DE23 + dummy VD
-//   HY7  <- dummy TC + dummy VD       (1D2E6D deliberately removed)
-//   HY8  <- real TC 20162E + dummy VD
-//   HY9  <- real TC 179910 + dummy VD
-//   HY10 <- real TC 1D2C89 + dummy VD
-//   HY11..HY19 = dummy TC + dummy VD
-//   HY20 = real configured TC/VD (untouched)
-//
-// Synthetic TC behavior follows the locally reconstructed original protocol:
-//   * WEATHER_EVENT 0x70 about 20 s before CLIMATE_EVENT 0x58
-//   * same counter for 0x70 and the following 0x58
-//   * next 0x58 interval derived from TC address + current counter (120..183.75 s)
-//   * deterministic but unsynchronised initial phases (not evenly spaced)
-//
-// Synthetic incoming packets cannot physically arrive from the same CC1101.
-// Therefore they reserve a conservative virtual RX airtime. While that virtual
-// packet is on air, the main loop is blocked; a real frame that completed in the
-// same window is deliberately consumed as a collision. All HY-originated packets
-// (TC ACK, Link-B 0x58, runtime ACK) are still transmitted for real by CC1101.
-//
-// Dummy VD ACK_STATUS timing uses the measured ~95 ms Link-A/VD response order.
-// Original VDs additionally emitted two 0x10 runtime frames after each observed
-// ACK_STATUS in our current logs. Their exact spacing is not protocol-proven, so
-// the two short delays below are explicitly an empirical stress approximation.
-static const uint32_t DUMMY_TC_WEATHER_LEAD_MS = 20000UL;
-static const uint16_t DUMMY_VD_ACK_DELAY_MS    = 95;
-static const uint16_t DUMMY_VD_RT1_DELAY_MS    = 100;
-static const uint16_t DUMMY_VD_RT2_DELAY_MS    = 220;
-static const uint8_t  DUMMY_TC_TARGET_RAW      = 0x80;
-static const uint8_t  DUMMY_TC_COUNTER_STEP    = 29;
-
-// Conservative virtual receive airtime for the observed packet sizes at the
-// HomeMatic CC1101 data rate. These windows model receiver/channel occupation,
-// not protocol processing latency.
-static const uint8_t DUMMY_RX_WEATHER_MS = 16; // observed len 12
-static const uint8_t DUMMY_RX_CLIMATE_MS = 16; // observed len 11
-static const uint8_t DUMMY_RX_VD_ACK_MS  = 19; // observed len 14
-static const uint8_t DUMMY_RX_VD_RT_MS   = 27; // observed len 22
-static const uint8_t DUMMY_TX_RT_ACK_MS  = 16; // virtual HY ACK airtime/load window
-
-static_assert(DUMMY_VD_ACK_DELAY_MS < VD_ACK_TIMEOUT_MS,
-              "dummy VD ACK must arrive before timeout");
 
 // All 20 logical identities are stored in flash. No Device object is duplicated
 // for these identities; the reusable config adapter temporarily binds to one.
@@ -1148,31 +1090,10 @@ static uint8_t commandForNextVdSlot(const HySlot& s);
 static uint8_t targetForNextVdSlot(const HySlot& s);
 static void setAdapterRuntimeState(uint8_t index, ConfigDevice& d);
 static bool isOwnHyId(const HMID& id);
-static bool handleLoadTestFixedTc(Message& msg);
-static bool serviceDummyTcTraffic();
-static bool serviceSyntheticVdAck(uint8_t index, uint32_t now);
-static bool serviceSyntheticVdRuntime(uint8_t index, uint32_t now);
 static bool handleVdAckStatus(uint8_t index, Message& msg);
 static bool handleVdRuntime(uint8_t index, Message& msg);
-static void reserveSyntheticRxWindow(uint8_t index, uint8_t type, uint8_t airtimeMs);
-static void reserveSyntheticTxWindow(uint8_t index, uint8_t type, uint8_t airtimeMs);
 
 HySlot hySlots[LOGICAL_HY_COUNT] __attribute__((section(".noinit")));
-
-// Load-test state is normal BSS and is reconstructed after every boot/recovery.
-static uint32_t testSlotMask = 0;       // free EEPROM peer slots used by load test
-static uint32_t testRealTcMask = 0;     // load-test slots driven by a physical TC
-// dummyTcNextMs is the next CLIMATE_EVENT time. WEATHER_EVENT is derived as
-// exactly 20 s earlier and guarded by dummyTcWeatherSentMask.
-static uint32_t dummyTcNextMs[LOGICAL_HY_COUNT];
-static uint8_t  dummyTcCounter[LOGICAL_HY_COUNT];
-static uint32_t dummyTcWeatherSentMask = 0;
-
-// Empirical two-frame VD runtime stress sequence after each dummy ACK_STATUS.
-static uint32_t dummyVdRuntimeNextMs[LOGICAL_HY_COUNT];
-static uint8_t  dummyVdRuntimeCounter[LOGICAL_HY_COUNT];
-static uint32_t dummyVdRuntimeActiveMask = 0;
-static uint32_t dummyVdRuntimeSecondMask = 0;
 
 // Exactly one physical radio means exactly one unsolicited CCU status transaction
 // can be in flight.
@@ -1247,79 +1168,6 @@ static bool idBytesEqual(const uint8_t in[3], const HMID& id) {
 
 static bool same3(const uint8_t a[3], const uint8_t b[3]) {
   return a[0] == b[0] && a[1] == b[1] && a[2] == b[2];
-}
-
-static HMID dummyTcId(uint8_t index) {
-  return HMID(0xfd, 0x10, (uint8_t)(index + 1U));
-}
-
-static HMID dummyVdId(uint8_t index) {
-  return HMID(0xfd, 0x20, (uint8_t)(index + 1U));
-}
-
-static bool maskHas(uint32_t mask, uint8_t index) {
-  return (mask & ((uint32_t)1UL << index)) != 0;
-}
-
-static void maskSet(uint32_t& mask, uint8_t index, bool on) {
-  const uint32_t bit = ((uint32_t)1UL << index);
-  if (on) mask |= bit;
-  else mask &= ~bit;
-}
-
-// Zero-based index (HY1 == 0). False means this load-test slot uses a dummy TC.
-static bool fixedTestTcForSlot(uint8_t index, uint8_t out[3]) {
-  switch (index) {
-    case 0:  out[0]=0x1F; out[1]=0x91; out[2]=0x03; return true; // HY1
-    case 2:  out[0]=0x18; out[1]=0x7A; out[2]=0x60; return true; // HY3
-    case 3:  out[0]=0x1A; out[1]=0x3F; out[2]=0x0D; return true; // HY4
-    case 5:  out[0]=0x20; out[1]=0xDE; out[2]=0x23; return true; // HY6
-    case 7:  out[0]=0x20; out[1]=0x16; out[2]=0x2E; return true; // HY8
-    case 8:  out[0]=0x17; out[1]=0x99; out[2]=0x10; return true; // HY9
-    case 9:  out[0]=0x1D; out[1]=0x2C; out[2]=0x89; return true; // HY10
-    default:
-      out[0] = out[1] = out[2] = 0;
-      return false;
-  }
-}
-
-static uint32_t initialDummyTcPhaseMs(uint8_t index, uint8_t counter) {
-  // A real installed population has unrelated phases. Reuse the documented
-  // address/counter PRNG and fold it into a deterministic 25..179 s startup
-  // offset. This avoids the artificial 7 s staircase of the old load test.
-  const uint32_t address = 0xFD1000UL | (uint32_t)(index + 1U);
-  uint32_t seed = (address << 8) | counter;
-  uint32_t r = (uint32_t)(seed * 1103515245UL + 12345UL);
-  r >>= 16;
-  return 25000UL + (r % 155000UL);
-}
-
-static void armDummyTcIfNeeded(uint8_t index) {
-  if (!maskHas(testSlotMask, index) || maskHas(testRealTcMask, index)) {
-    dummyTcNextMs[index] = 0;
-    maskSet(dummyTcWeatherSentMask, index, false);
-    return;
-  }
-  if (dummyTcNextMs[index] != 0) return;
-
-  dummyTcCounter[index] = (uint8_t)(index * DUMMY_TC_COUNTER_STEP);
-  dummyTcNextMs[index] = millis()
-                       + initialDummyTcPhaseMs(index, dummyTcCounter[index]);
-  maskSet(dummyTcWeatherSentMask, index, false);
-}
-
-static void armAllDummyTcSchedules() {
-  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
-    dummyTcNextMs[i] = 0;
-    dummyVdRuntimeNextMs[i] = 0;
-  }
-  dummyTcWeatherSentMask = 0;
-  dummyVdRuntimeActiveMask = 0;
-  dummyVdRuntimeSecondMask = 0;
-
-  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
-    armDummyTcIfNeeded(i);
-  }
 }
 
 static uint16_t deviceEepromAddr(uint8_t index) {
@@ -1407,8 +1255,8 @@ static bool eepromLayoutSafe() {
   return last->getUserStorage().getAddress() <= HY25_LAYOUT_MAGIC_ADDR;
 }
 
-// v25 is intentionally a clean layout transition. If the v25 magic is absent,
-// all 20 logical devices are first-initialized at the compact addresses.
+// If the v25 layout marker is absent, initialize all 20 logical devices
+// at the compact EEPROM addresses once.
 static bool ensurePersistentLayout() {
   if (!eepromLayoutSafe()) {
     Serial.println(F("EEP OVR"));
@@ -1520,31 +1368,7 @@ static void syncSlotFromConfig(uint8_t index) {
   firstPeer(*d, THERM_CHANNEL, newTc);
   firstPeer(*d, VALVE_CHANNEL, newVd);
 
-  // Never touch a real direct peer. HY5/HY20 therefore keep their genuine
-  // EEPROM TC/VD mappings. Only completely free slots become load-test slots.
-  const bool configuredDirectPeer = idBytesValid(newTc) || idBytesValid(newVd);
-  if (!configuredDirectPeer) {
-    maskSet(testSlotMask, index, true);
-
-    if (fixedTestTcForSlot(index, newTc)) {
-      maskSet(testRealTcMask, index, true);
-    }
-    else {
-      hmidToBytes(dummyTcId(index), newTc);
-      maskSet(testRealTcMask, index, false);
-    }
-
-    hmidToBytes(dummyVdId(index), newVd);
-  }
-  else {
-    maskSet(testSlotMask, index, false);
-    maskSet(testRealTcMask, index, false);
-    dummyTcNextMs[index] = 0;
-    dummyVdRuntimeNextMs[index] = 0;
-    maskSet(dummyTcWeatherSentMask, index, false);
-    maskSet(dummyVdRuntimeActiveMask, index, false);
-    maskSet(dummyVdRuntimeSecondMask, index, false);
-  }
+  // Runtime peers are exactly the direct peers persisted in EEPROM.
 
   const uint8_t newFactor = effectiveFactorFromConfig(*d);
   const bool factorChanged = s.factor != newFactor;
@@ -1586,7 +1410,6 @@ static void syncSlotFromConfig(uint8_t index) {
     s.missCount = 0;
   }
 
-  armDummyTcIfNeeded(index);
 }
 
 static void initColdSlots() {
@@ -1609,11 +1432,6 @@ static uint32_t intervalForAddressMs(uint32_t address, uint8_t counter) {
   uint32_t result = (uint32_t)(seed * 1103515245UL + 12345UL);
   result >>= 16;
   return (480UL + (result & 0xffUL)) * 250UL;
-}
-
-static uint32_t dummyTcIntervalMs(uint8_t index, uint8_t counter) {
-  const uint32_t address = 0xFD1000UL | (uint32_t)(index + 1U);
-  return intervalForAddressMs(address, counter);
 }
 
 static uint32_t linkBIntervalMs(uint8_t index, uint8_t counter) {
@@ -1874,14 +1692,6 @@ static bool handleTcClimate(uint8_t index, Message& msg) {
   return true;
 }
 
-static int8_t findAssignedTestTc(const HMID& sender) {
-  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
-    if (!maskHas(testSlotMask, i) || !maskHas(testRealTcMask, i)) continue;
-    if (idBytesEqual(hySlots[i].tcPeer, sender)) return (int8_t)i;
-  }
-  return -1;
-}
-
 static void printHexByte2(uint8_t b) {
   if (b < 0x10) Serial.print('0');
   Serial.print(b, HEX);
@@ -1891,179 +1701,6 @@ static void printHmidSerial(const HMID& id) {
   printHexByte2(id.id0());
   printHexByte2(id.id1());
   printHexByte2(id.id2());
-}
-
-static bool handleLoadTestFixedTc(Message& msg) {
-  if (msg.type() != TYPE_CLIMATE_EVENT || msg.length() < 0x0b) return false;
-  if (isOwnHyId(msg.from())) return false;
-
-  const int8_t slot = findAssignedTestTc(msg.from());
-  if (slot < 0) return false;
-
-  return handleTcClimate((uint8_t)slot, msg);
-}
-
-static bool serviceDummyTcTraffic() {
-  const uint32_t now = millis();
-  int8_t due = -1;
-  bool dueWeather = false;
-  uint32_t dueTime = 0;
-
-  // Select the oldest due synthetic TC event globally. Each dummy TC has the
-  // original two-step cycle: WEATHER_EVENT, then 20 s later CLIMATE_EVENT.
-  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
-    if (!maskHas(testSlotMask, i) || maskHas(testRealTcMask, i)) continue;
-    if (dummyTcNextMs[i] == 0) continue;
-
-    const bool weatherSent = maskHas(dummyTcWeatherSentMask, i);
-    const uint32_t eventTime = weatherSent
-        ? dummyTcNextMs[i]
-        : (dummyTcNextMs[i] - DUMMY_TC_WEATHER_LEAD_MS);
-
-    if (!timeReached(now, eventTime)) continue;
-    if (due < 0 || (int32_t)(eventTime - dueTime) < 0) {
-      due = (int8_t)i;
-      dueWeather = !weatherSent;
-      dueTime = eventTime;
-    }
-  }
-
-  if (due < 0) return false;
-
-  const uint8_t index = (uint8_t)due;
-  HySlot& s = hySlots[index];
-  const uint8_t counter = dummyTcCounter[index];
-
-  if (dueWeather) {
-    reserveSyntheticRxWindow(index, TYPE_WEATHER_EVENT, DUMMY_RX_WEATHER_MS);
-    maskSet(dummyTcWeatherSentMask, index, true);
-    Serial.print(F("w")); Serial.print(index + 1);
-    Serial.print(' '); Serial.println(counter, HEX);
-    return true;
-  }
-
-  reserveSyntheticRxWindow(index, TYPE_CLIMATE_EVENT, DUMMY_RX_CLIMATE_MS);
-
-  const uint8_t command =
-      (s.flags & HYS_HAVE_TC_TARGET) ? CMD_REFRESH : CMD_NEW_TARGET;
-
-  Message synthetic;
-  synthetic.init(0x0b,
-                 counter,
-                 TYPE_CLIMATE_EVENT,
-                 CTRL_TC_TO_VD,
-                 command,
-                 DUMMY_TC_TARGET_RAW);
-  synthetic.from(bytesToHmid(s.tcPeer));
-  synthetic.to(hyId(index));
-
-  Serial.print(F("t")); Serial.print(index + 1);
-  Serial.print(' '); Serial.println(counter, HEX);
-  const bool handled = handleTcClimate(index, synthetic);
-
-  // The current counter determines the interval to the next CLIMATE_EVENT.
-  const uint32_t interval =
-      calibrateLinkBInterval(dummyTcIntervalMs(index, counter));
-  dummyTcNextMs[index] += interval;
-  dummyTcCounter[index] = (uint8_t)(counter + 1U);
-  maskSet(dummyTcWeatherSentMask, index, false);
-  return handled;
-}
-
-static bool serviceSyntheticVdAck(uint8_t index, uint32_t now) {
-  HySlot& s = hySlots[index];
-  if (!maskHas(testSlotMask, index)) return false;
-  if ((s.flags & HYS_AWAIT_VD_ACK) == 0) return false;
-  if (!idBytesEqual(s.vdPeer, dummyVdId(index))) return false;
-
-  const uint32_t due =
-      s.vdAckDeadlineMs - (uint32_t)(VD_ACK_TIMEOUT_MS - DUMMY_VD_ACK_DELAY_MS);
-  if (!timeReached(now, due)) return false;
-  if (timeReached(now, s.vdAckDeadlineMs)) return false;
-
-  reserveSyntheticRxWindow(index, TYPE_RESPONSE, DUMMY_RX_VD_ACK_MS);
-
-  const uint8_t ackCounter = s.awaitingVdCounter;
-  uint16_t percent100 = decodeTcTargetPercent100(s.lastSentVdTargetRaw);
-  uint8_t positionRaw = encodeVdPositionPercent100(percent100);
-
-  Message ack;
-  ack.init(0x0e,
-           ackCounter,
-           TYPE_RESPONSE,
-           0x82,
-           RESPONSE_ACK_STATUS,
-           VD_CHANNEL);
-  ack.from(dummyVdId(index));
-  ack.to(hyId(index));
-  ack.data()[0] = positionRaw;
-  ack.data()[1] = 0x00;
-  ack.data()[2] = 0x40;
-
-  Serial.print(F("d")); Serial.print(index + 1);
-  Serial.print(' '); Serial.println(ackCounter, HEX);
-  const bool handled = handleVdAckStatus(index, ack);
-
-  // Empirical stress model from the current real VD logs: after each ACK_STATUS
-  // two addressed 0x10 frames appear, with counters LinkB+2 and LinkB+3.
-  dummyVdRuntimeCounter[index] = (uint8_t)(ackCounter + 2U);
-  dummyVdRuntimeNextMs[index] = millis() + DUMMY_VD_RT1_DELAY_MS;
-  maskSet(dummyVdRuntimeActiveMask, index, true);
-  maskSet(dummyVdRuntimeSecondMask, index, false);
-  return handled;
-}
-
-static bool serviceSyntheticVdRuntime(uint8_t index, uint32_t now) {
-  if (!maskHas(dummyVdRuntimeActiveMask, index)) return false;
-  if (!timeReached(now, dummyVdRuntimeNextMs[index])) return false;
-
-  HySlot& s = hySlots[index];
-  if (!maskHas(testSlotMask, index) ||
-      !idBytesEqual(s.vdPeer, dummyVdId(index))) {
-    maskSet(dummyVdRuntimeActiveMask, index, false);
-    return false;
-  }
-
-  reserveSyntheticRxWindow(index, TYPE_VALVE_RUNTIME, DUMMY_RX_VD_RT_MS);
-
-  const uint8_t counter = dummyVdRuntimeCounter[index];
-
-  Serial.print(F("r")); Serial.print(index + 1);
-  Serial.print(' '); Serial.println(counter, HEX);
-
-  // IMPORTANT: this is a load model, not a synthetic protocol receive.
-  // A real VD runtime frame would leave the CC1101 in the hardware RX state
-  // produced by an actual packet. Calling handleVdRuntime() for an injected
-  // Message skipped that hardware transition and could make its real ACK-TX
-  // exercise an artificial CC1101 corner case after reboot.
-  //
-  // Keep the measured/observed load instead:
-  //   * DUMMY_RX_VD_RT_MS above reserves the incoming 0x10 airtime.
-  //   * the normal 15 ms response delay is represented here.
-  //   * DUMMY_TX_RT_ACK_MS reserves the outgoing HY ACK airtime.
-  // During both virtual radio windows any real packet that arrives is treated
-  // as a collision, exactly because the single real CC1101 would not have been
-  // available to receive it in the final 20-device system.
-  delay(VD_RUNTIME_ACK_DELAY_MS);
-  reserveSyntheticTxWindow(index, TYPE_VALVE_RUNTIME, DUMMY_TX_RT_ACK_MS);
-
-  Serial.print(F("X")); Serial.print(index + 1);
-  Serial.print(' '); Serial.print(counter, HEX);
-  Serial.println(F(" 1"));
-
-  if (!maskHas(dummyVdRuntimeSecondMask, index)) {
-    maskSet(dummyVdRuntimeSecondMask, index, true);
-    dummyVdRuntimeCounter[index] = (uint8_t)(counter + 1U);
-    dummyVdRuntimeNextMs[index] = millis()
-                                + (DUMMY_VD_RT2_DELAY_MS - DUMMY_VD_RT1_DELAY_MS);
-  }
-  else {
-    maskSet(dummyVdRuntimeActiveMask, index, false);
-    maskSet(dummyVdRuntimeSecondMask, index, false);
-    dummyVdRuntimeNextMs[index] = 0;
-  }
-
-  return true;
 }
 
 static bool handleVdAckStatus(uint8_t index, Message& msg) {
@@ -2123,13 +1760,6 @@ static bool handleVdRuntime(uint8_t index, Message& msg) {
 static void serviceSlotRuntime(uint8_t index) {
   HySlot& s = hySlots[index];
   uint32_t now = millis();
-
-  // Dummy VDs do not exist on air. The Link-B packet itself was still really
-  // transmitted; only the matching VD ACK_STATUS is injected here.
-  serviceSyntheticVdAck(index, now);
-  now = millis();
-  serviceSyntheticVdRuntime(index, now);
-  now = millis();
 
   if ((s.flags & HYS_AWAIT_VD_ACK) && timeReached(now, s.vdAckDeadlineMs)) {
     s.flags &= ~HYS_AWAIT_VD_ACK;
@@ -2678,91 +2308,6 @@ MultiHyConfigButton cfgBtn;
 
 static uint32_t lastSharedRadioRxMs = 0;
 
-// Model one incoming packet that would occupy the real single CC1101 receiver.
-// The radio stays in RX so we do not perturb its configuration; the CPU simply
-// cannot service another logical HY during the virtual packet. If a real frame
-// completed during the same short window, consume it as an RF collision.
-static void reserveSyntheticRxWindow(uint8_t index, uint8_t type, uint8_t airtimeMs) {
-  const uint32_t until = millis() + airtimeMs;
-
-  uint8_t dropped = 0;
-  Message collided;
-
-  // REAL4 never changes the CC1101 state for synthetic traffic.
-  //
-  // Keep the real receiver operating normally, but continuously drain every
-  // complete real packet that arrives during the synthetic RF window. Those
-  // packets represent half-duplex/channel collisions and are intentionally not
-  // dispatched. Unlike REAL2, this drains ALL packets instead of reading only
-  // one at the end, so no stale RXFIFO contents can accumulate.
-  while (!timeReached(millis(), until)) {
-    wdt_reset();
-
-    uint8_t num = hal.radio.read(collided);
-    if (num >= 10) {
-      if (dropped != 0xff) ++dropped;
-      lastSharedRadioRxMs = millis();
-    }
-
-    delay(1);
-  }
-
-  // One final bounded drain catches a packet that completed exactly at the end
-  // of the virtual occupancy window. Stop immediately once RXFIFO is empty.
-  for (uint8_t n = 0; n < 4; ++n) {
-    uint8_t num = hal.radio.read(collided);
-    if (num < 10) break;
-    if (dropped != 0xff) ++dropped;
-    lastSharedRadioRxMs = millis();
-  }
-
-  // A synthetic receive itself also counts as recent radio activity.
-  lastSharedRadioRxMs = millis();
-
-  if (dropped != 0) {
-    Serial.print(F("C")); Serial.print(index + 1);
-    Serial.print(' '); printHexByte2(type);
-    Serial.print(F(" N")); Serial.println(dropped);
-  }
-}
-
-static void reserveSyntheticTxWindow(uint8_t index, uint8_t type, uint8_t airtimeMs) {
-  const uint32_t until = millis() + airtimeMs;
-
-  uint8_t dropped = 0;
-  Message collided;
-
-  // Occupancy-only synthetic HY TX. Do not touch MARCSTATE/TXFIFO/RXFIFO
-  // directly. Real packets received during this modeled TX airtime are drained
-  // through the normal receive path and intentionally discarded as collisions.
-  while (!timeReached(millis(), until)) {
-    wdt_reset();
-
-    uint8_t num = hal.radio.read(collided);
-    if (num >= 10) {
-      if (dropped != 0xff) ++dropped;
-      lastSharedRadioRxMs = millis();
-    }
-
-    delay(1);
-  }
-
-  for (uint8_t n = 0; n < 4; ++n) {
-    uint8_t num = hal.radio.read(collided);
-    if (num < 10) break;
-    if (dropped != 0xff) ++dropped;
-    lastSharedRadioRxMs = millis();
-  }
-
-  lastSharedRadioRxMs = millis();
-
-  if (dropped != 0) {
-    Serial.print(F("C")); Serial.print(index + 1);
-    Serial.print(F(" T")); printHexByte2(type);
-    Serial.print(F(" N")); Serial.println(dropped);
-  }
-}
-
 static bool isOwnHyId(const HMID& id) {
   return hyIndexFromId(id) >= 0;
 }
@@ -2818,13 +2363,6 @@ static bool dispatchSharedRadioMessage(Message& msg) {
     return findSlotByTcPeer(msg.from()) >= 0;
   }
 
-  // The seven known physical test TCs are intentionally not direct peers in
-  // EEPROM. Accept their CLIMATE_EVENT by sender ID and route it to the fixed
-  // load-test HY slot, regardless of the telegram's original destination.
-  if (msg.type() == TYPE_CLIMATE_EVENT) {
-    return handleLoadTestFixedTc(msg);
-  }
-
   return false;
 }
 
@@ -2834,9 +2372,8 @@ static bool pollSharedRadio() {
   if (num >= 10) {
     lastSharedRadioRxMs = millis();
 
-    // RX diagnostic: this is printed immediately after a packet was really
-    // read from the CC1101, before any HY/address/peer filtering. Synthetic
-    // TC/VD traffic never passes through this point.
+    // RX diagnostic: printed immediately after a packet was really read from
+    // the CC1101, before any HY/address/peer filtering.
     if (msg.type() == TYPE_CLIMATE_EVENT ||
         msg.type() == TYPE_VALVE_RUNTIME ||
         msg.type() == TYPE_RESPONSE ||
@@ -2876,7 +2413,7 @@ static void serviceRadioDiag() {
 void setup() {
   DINIT(57600, ASKSIN_PLUS_PLUS_IDENTIFIER);
   Serial.begin(57600);
-  Serial.println(F("HY v25c LT20-REAL5-VERIFIEDINIT-RXIRQ E46"));
+  Serial.println(F("HY REAL20-VERIFIEDINIT-RXIRQ E46"));
 #ifdef SIMPLE_CC1101_INIT
   Serial.println(F("SIMPLE_CC1101_INIT=1"));
 #else
@@ -2938,9 +2475,6 @@ void setup() {
     initColdSlots();
   }
 
-  // Arm all eleven fully synthetic TCs with independent deterministic phases.
-  armAllDummyTcSchedules();
-
   pinMode(CONFIG_BUTTON_PIN, INPUT_PULLUP);
   if (digitalRead(CONFIG_BUTTON_PIN) == LOW) {
     delay(3500);
@@ -2969,63 +2503,6 @@ void setup() {
   Serial.print(F("EE "));
   Serial.println(eeProbe->getUserStorage().getAddress());
 
-  for (uint8_t i = 0; i < 2; ++i) {
-    Serial.print(F("S")); Serial.print(i + 1);
-    Serial.print(F(" F")); Serial.print(hySlots[i].factor);
-    Serial.print(F(" T")); Serial.print(idBytesValid(hySlots[i].tcPeer) ? 1 : 0);
-    Serial.print(F(" V")); Serial.print(idBytesValid(hySlots[i].vdPeer) ? 1 : 0);
-    Serial.print(F(" M")); Serial.println(idBytesValid(hySlots[i].master) ? 1 : 0);
-  }
-
-  // Compact load-test map at boot. Expected with only HY5/HY20 genuinely
-  // peered: LT R7 D11, followed by the seven physical TC assignments.
-  uint8_t ltReal = 0;
-  uint8_t ltDummy = 0;
-  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
-    if (!maskHas(testSlotMask, i)) continue;
-    if (maskHas(testRealTcMask, i)) ++ltReal;
-    else ++ltDummy;
-  }
-  Serial.print(F("LT R")); Serial.print(ltReal);
-  Serial.print(F(" D")); Serial.println(ltDummy);
-  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
-    if (!maskHas(testSlotMask, i) || !maskHas(testRealTcMask, i)) continue;
-    Serial.print(F("TC= ")); Serial.print(i + 1);
-    Serial.print(' '); printHmidSerial(bytesToHmid(hySlots[i].tcPeer));
-    Serial.println();
-  }
-
-  // Explicitly show that the two real reference paths survived the test overlay.
-  // EEDIAG additionally prints the actual EEPROM-derived IDs and cold-start
-  // runtime state. This is diagnostic output only; no state is modified.
-  const uint8_t refSlots[2] = {4, 19};
-  for (uint8_t n = 0; n < 2; ++n) {
-    const uint8_t i = refSlots[n];
-    const HySlot& s = hySlots[i];
-
-    Serial.print(F("R")); Serial.print(i + 1);
-    Serial.print(F(" T")); Serial.print(idBytesValid(s.tcPeer) ? 1 : 0);
-    Serial.print(F(" V")); Serial.print(idBytesValid(s.vdPeer) ? 1 : 0);
-    Serial.print(F(" M")); Serial.println(idBytesValid(s.master) ? 1 : 0);
-
-    Serial.print(F("CFG")); Serial.print(i + 1);
-    Serial.print(F(" M=")); printHmidSerial(bytesToHmid(s.master));
-    Serial.print(F(" T=")); printHmidSerial(bytesToHmid(s.tcPeer));
-    Serial.print(F(" V=")); printHmidSerial(bytesToHmid(s.vdPeer));
-    Serial.print(F(" FL="));
-    if (s.flags < 0x10) Serial.print('0');
-    Serial.print(s.flags, HEX);
-    Serial.print(F(" BC="));
-    if (s.linkBCounter < 0x10) Serial.print('0');
-    Serial.print(s.linkBCounter, HEX);
-    Serial.print(F(" AC="));
-    if (s.awaitingVdCounter < 0x10) Serial.print('0');
-    Serial.print(s.awaitingVdCounter, HEX);
-    Serial.print(F(" MISS=")); Serial.print(s.missCount);
-    Serial.print(F(" FACT=")); Serial.print(s.factor);
-    Serial.print(F(" TRY=")); Serial.println(s.txTryMax);
-  }
-
   hal.battery.init(seconds2ticks(60UL * 60), sysclock);
 
   enableHySoftWatchdog();
@@ -3053,7 +2530,6 @@ void loop() {
 
   pollSharedRadio();
   servicePairingSession();
-  serviceDummyTcTraffic();
 
   for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
     // Completely empty HYs need no runtime work.
