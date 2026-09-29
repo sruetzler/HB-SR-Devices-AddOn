@@ -1,5 +1,5 @@
 //- -----------------------------------------------------------------------------------------------------------------------
-// HB-SR-HY v25c LT20-REAL5: realistic 20-HY load/stress test; virtual VD-runtime ACK uses occupancy-only TX
+// HB-SR-HY v25c LT20-REAL5-RADIODIAG: REAL5 + EEPROM + periodic CC1101 state diagnostics
 // Stateful BidCoS protocol proxy for an original HM-CC-TC <-> original HM-CC-VD pair.
 //
 // Logical links:
@@ -53,6 +53,11 @@
 #include <EnableInterrupt.h>
 #include <avr/wdt.h>
 #include <avr/interrupt.h>
+
+#ifdef SIMPLE_CC1101_INIT
+#undef SIMPLE_CC1101_INIT
+#endif
+
 #include <AskSinPP.h>
 #include <LowPower.h>
 #include <Switch.h>
@@ -728,6 +733,85 @@ public:
     this->spi.writeReg(CC1101_MDMCFG4, (mdmcfg4 & 0x0f) | 0x80);
     this->spi.strobe(CC1101_SRX);
     hySpiFaultCode = 0;
+  }
+
+  static void printHex2(uint8_t value) {
+    if (value < 0x10) Serial.print('0');
+    Serial.print(value, HEX);
+  }
+
+  // One complete read-only dump of the CC1101 registers that determine
+  // frequency, data rate/modulation and packet handling.
+  void printRadioConfigDump() {
+    const uint8_t freq2    = this->spi.readReg(CC1101_FREQ2,    CC1101_CONFIG);
+    const uint8_t freq1    = this->spi.readReg(CC1101_FREQ1,    CC1101_CONFIG);
+    const uint8_t freq0    = this->spi.readReg(CC1101_FREQ0,    CC1101_CONFIG);
+    const uint8_t fsctrl0  = this->spi.readReg(CC1101_FSCTRL0,  CC1101_CONFIG);
+    const uint8_t mdmcfg4  = this->spi.readReg(CC1101_MDMCFG4,  CC1101_CONFIG);
+    const uint8_t mdmcfg3  = this->spi.readReg(CC1101_MDMCFG3,  CC1101_CONFIG);
+    const uint8_t mdmcfg2  = this->spi.readReg(CC1101_MDMCFG2,  CC1101_CONFIG);
+    const uint8_t deviatn  = this->spi.readReg(CC1101_DEVIATN,  CC1101_CONFIG);
+    const uint8_t pktctrl0 = this->spi.readReg(CC1101_PKTCTRL0, CC1101_CONFIG);
+    const uint8_t pktctrl1 = this->spi.readReg(CC1101_PKTCTRL1, CC1101_CONFIG);
+    const uint8_t pktlen   = this->spi.readReg(CC1101_PKTLEN,   CC1101_CONFIG);
+    const uint8_t mcsm1    = this->spi.readReg(CC1101_MCSM1,    CC1101_CONFIG);
+    const uint8_t iocfg0   = this->spi.readReg(CC1101_IOCFG0,   CC1101_CONFIG);
+    const uint8_t marc     = this->spi.readReg(CC1101_MARCSTATE,CC1101_STATUS);
+    const uint8_t rxbytes  = this->spi.readReg(CC1101_RXBYTES,  CC1101_STATUS);
+    const uint8_t spiFault = hySpiFaultCode;
+
+    Serial.print(F("CFG F="));
+    printHex2(freq2); printHex2(freq1); printHex2(freq0);
+    Serial.print(F(" FS=")); printHex2(fsctrl0);
+    Serial.print(F(" M4=")); printHex2(mdmcfg4);
+    Serial.print(F(" M3=")); printHex2(mdmcfg3);
+    Serial.print(F(" M2=")); printHex2(mdmcfg2);
+    Serial.print(F(" D="));  printHex2(deviatn);
+    Serial.print(F(" P0=")); printHex2(pktctrl0);
+    Serial.print(F(" P1=")); printHex2(pktctrl1);
+    Serial.print(F(" L="));  printHex2(pktlen);
+    Serial.print(F(" C="));  printHex2(mcsm1);
+    Serial.print(F(" I="));  printHex2(iocfg0);
+    Serial.print(F(" M="));  printHex2(marc);
+    Serial.print(F(" R="));  printHex2(rxbytes);
+    Serial.print(F(" S="));  Serial.println(spiFault);
+  }
+
+  // Read-only CC1101 state snapshot for diagnosing a radio that appears to
+  // stop producing real RF RX/TX traffic. No strobes, FIFO flushes or register
+  // writes are performed here.
+  void printRadioDiag(uint32_t nowMs) {
+    const uint8_t marc =
+        this->spi.readReg(CC1101_MARCSTATE, CC1101_STATUS);
+    const uint8_t iocfg0 =
+        this->spi.readReg(CC1101_IOCFG0, CC1101_CONFIG);
+    const uint8_t mcsm1 =
+        this->spi.readReg(CC1101_MCSM1, CC1101_CONFIG);
+    const uint8_t rxbytes =
+        this->spi.readReg(CC1101_RXBYTES, CC1101_STATUS);
+    const uint8_t spiFault = hySpiFaultCode;
+
+    Serial.print(F("RD "));
+    Serial.print(nowMs);
+
+    Serial.print(F(" M="));
+    if (marc < 0x10) Serial.print('0');
+    Serial.print(marc, HEX);
+
+    Serial.print(F(" I="));
+    if (iocfg0 < 0x10) Serial.print('0');
+    Serial.print(iocfg0, HEX);
+
+    Serial.print(F(" C="));
+    if (mcsm1 < 0x10) Serial.print('0');
+    Serial.print(mcsm1, HEX);
+
+    Serial.print(F(" R="));
+    if (rxbytes < 0x10) Serial.print('0');
+    Serial.print(rxbytes, HEX);
+
+    Serial.print(F(" S="));
+    Serial.println(spiFault);
   }
 
 protected:
@@ -2778,10 +2862,26 @@ static bool pollSharedRadio() {
 // Setup / loop
 // -------------------------------------------------------------------------------------------------
 
+static uint32_t nextRadioDiagMs = 0;
+static const uint32_t RADIO_DIAG_INTERVAL_MS = 30000UL;
+
+static void serviceRadioDiag() {
+  const uint32_t now = millis();
+  if ((int32_t)(now - nextRadioDiagMs) < 0) return;
+
+  nextRadioDiagMs = now + RADIO_DIAG_INTERVAL_MS;
+  hal.radio.printRadioDiag(now);
+}
+
 void setup() {
   DINIT(57600, ASKSIN_PLUS_PLUS_IDENTIFIER);
   Serial.begin(57600);
-  Serial.println(F("HY v25c LT20-REAL5 E46"));
+  Serial.println(F("HY v25c LT20-REAL5-VERIFIEDINIT-RXIRQ E46"));
+#ifdef SIMPLE_CC1101_INIT
+  Serial.println(F("SIMPLE_CC1101_INIT=1"));
+#else
+  Serial.println(F("SIMPLE_CC1101_INIT=0"));
+#endif
 
   const bool softRecovery = (hySoftWatchdogMagic == HY_SOFT_WDT_MAGIC)
                          && (hyResetCause == 0);
@@ -2795,9 +2895,25 @@ void setup() {
   HMID primary = hyId(0);
   hal.init(primary);
 
+  Serial.println(F("STAGE INIT"));
+  hal.radio.printRadioConfigDump();
+
   ConfigDevice* d0 = activateConfigDevice(0, true);
   hal.config(d0->getConfigArea());
+
+  Serial.println(F("STAGE CONFIG"));
+  hal.radio.printRadioConfigDump();
+
   hal.radio.configureRxBandwidth();
+
+  // The compact 20-HY setup bypasses ConfigDevice::initDone().
+  // Radio::init() disables the GDO0 interrupt, so enable it explicitly
+  // once the physical radio configuration is complete.
+  hal.radio.enable();
+  Serial.println(F("RXIRQ ON"));
+
+  Serial.println(F("STAGE BW"));
+  hal.radio.printRadioConfigDump();
 
   if (softRecovery) {
     Serial.print(F("W "));
@@ -2880,13 +2996,34 @@ void setup() {
   }
 
   // Explicitly show that the two real reference paths survived the test overlay.
+  // EEDIAG additionally prints the actual EEPROM-derived IDs and cold-start
+  // runtime state. This is diagnostic output only; no state is modified.
   const uint8_t refSlots[2] = {4, 19};
   for (uint8_t n = 0; n < 2; ++n) {
     const uint8_t i = refSlots[n];
+    const HySlot& s = hySlots[i];
+
     Serial.print(F("R")); Serial.print(i + 1);
-    Serial.print(F(" T")); Serial.print(idBytesValid(hySlots[i].tcPeer) ? 1 : 0);
-    Serial.print(F(" V")); Serial.print(idBytesValid(hySlots[i].vdPeer) ? 1 : 0);
-    Serial.print(F(" M")); Serial.println(idBytesValid(hySlots[i].master) ? 1 : 0);
+    Serial.print(F(" T")); Serial.print(idBytesValid(s.tcPeer) ? 1 : 0);
+    Serial.print(F(" V")); Serial.print(idBytesValid(s.vdPeer) ? 1 : 0);
+    Serial.print(F(" M")); Serial.println(idBytesValid(s.master) ? 1 : 0);
+
+    Serial.print(F("CFG")); Serial.print(i + 1);
+    Serial.print(F(" M=")); printHmidSerial(bytesToHmid(s.master));
+    Serial.print(F(" T=")); printHmidSerial(bytesToHmid(s.tcPeer));
+    Serial.print(F(" V=")); printHmidSerial(bytesToHmid(s.vdPeer));
+    Serial.print(F(" FL="));
+    if (s.flags < 0x10) Serial.print('0');
+    Serial.print(s.flags, HEX);
+    Serial.print(F(" BC="));
+    if (s.linkBCounter < 0x10) Serial.print('0');
+    Serial.print(s.linkBCounter, HEX);
+    Serial.print(F(" AC="));
+    if (s.awaitingVdCounter < 0x10) Serial.print('0');
+    Serial.print(s.awaitingVdCounter, HEX);
+    Serial.print(F(" MISS=")); Serial.print(s.missCount);
+    Serial.print(F(" FACT=")); Serial.print(s.factor);
+    Serial.print(F(" TRY=")); Serial.println(s.txTryMax);
   }
 
   hal.battery.init(seconds2ticks(60UL * 60), sysclock);
@@ -2904,6 +3041,10 @@ void setup() {
   pendingCcuOwner = -1;
   pendingCcuRetriesLeft = 0;
   hyRadioStage = 0;
+
+  // Initial post-setup radio snapshot. The periodic service starts 30 s later.
+  hal.radio.printRadioDiag(millis());
+  nextRadioDiagMs = millis() + RADIO_DIAG_INTERVAL_MS;
 }
 
 void loop() {
@@ -2935,6 +3076,8 @@ void loop() {
                     !anyLinkBSlotWithin(now, CCU_STATUS_ACK_TIMEOUT_MS);
 
   serviceCcuStatus(allowCcuTx);
+
+  serviceRadioDiag();
 
   wdt_reset();
 }
