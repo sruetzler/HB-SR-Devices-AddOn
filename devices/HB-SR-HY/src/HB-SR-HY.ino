@@ -1666,25 +1666,51 @@ static bool sendLinkBSlot(uint8_t index) {
   return sent;
 }
 
-static bool handleTcClimate(uint8_t index, Message& msg) {
+// Apply one TC climate telegram to every logical HY that is paired with the
+// same physical thermostat. The telegram destination is deliberately ignored
+// here: a TC with multiple valve peers addresses them in turn, but the target
+// information is useful to every HY belonging to that TC group.
+static bool applyTcClimateToMatchingSlots(Message& msg) {
+  if (msg.type() != TYPE_CLIMATE_EVENT || msg.length() < 0x0b) return false;
+
+  bool matched = false;
+  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
+    HySlot& s = hySlots[i];
+    if (!idBytesEqual(s.tcPeer, msg.from())) continue;
+
+    s.flags |= HYS_HAVE_TC_TARGET;
+    s.currentTcCommand = msg.command();
+    s.currentTcTargetRaw = msg.subcommand();
+    recalcDesired(i);              // each HY applies its own reduction factor
+    matched = true;
+  }
+  return matched;
+}
+
+static void startLinkBSchedulesForTc(const HMID& tc) {
+  for (uint8_t i = 0; i < LOGICAL_HY_COUNT; ++i) {
+    if (idBytesEqual(hySlots[i].tcPeer, tc)) {
+      // Existing schedules keep their timing. Only a HY without a running
+      // Link-B schedule gets started by the newly learned TC target.
+      startLinkBScheduleIfNeeded(i);
+    }
+  }
+}
+
+// Only the logical HY explicitly addressed by the TC is allowed to answer on
+// Link A. The other HYs of the same TC group only consume the target silently.
+static bool handleAddressedTcClimate(uint8_t index, Message& msg) {
   HySlot& s = hySlots[index];
   if (msg.type() != TYPE_CLIMATE_EVENT || msg.length() < 0x0b) return false;
   if (!idBytesEqual(s.tcPeer, msg.from())) return false;
 
   const uint8_t requestRssi = hal.radio.rssi();
 
-  s.flags |= HYS_HAVE_TC_TARGET;
-  s.currentTcCommand = msg.command();
-  s.currentTcTargetRaw = msg.subcommand();
-  recalcDesired(index);
-
   bool ackSent = false;
   if ((s.flags & HYS_VD_LOST) == 0) {
     delay(LINK_A_RESPONSE_DELAY_MS);
     ackSent = sendAckStatusToTc(index, msg, requestRssi);
   }
-
-  startLinkBScheduleIfNeeded(index);
 
   Serial.print(F("T")); Serial.print(index + 1);
   Serial.print(' '); Serial.print(msg.count(), HEX);
@@ -2323,15 +2349,29 @@ static bool dispatchSharedRadioMessage(Message& msg) {
   if (isOwnHyId(msg.from())) return false;
 
   int8_t addressed = hyIndexFromId(msg.to());
+
+  // A TC with several valve peers addresses its TYPE 0x58 telegrams to those
+  // peers in turn. Share every valid TC target with all logical HYs that have
+  // this same TC as CH1 peer. Only the actually addressed HY may answer.
+  if (msg.type() == TYPE_CLIMATE_EVENT && msg.length() >= 0x0b &&
+      applyTcClimateToMatchingSlots(msg)) {
+    if (addressed >= 0) {
+      uint8_t index = (uint8_t)addressed;
+      if (idBytesEqual(hySlots[index].tcPeer, msg.from())) {
+        handleAddressedTcClimate(index, msg);
+      }
+    }
+
+    // Preserve the existing Link-B timeline of already running slots. Newly
+    // initialized slots of this TC group start only after the Link-A response.
+    startLinkBSchedulesForTc(msg.from());
+    return true;
+  }
+
   if (addressed >= 0) {
     uint8_t index = (uint8_t)addressed;
 
     if (handlePendingCcuAck(index, msg)) return true;
-
-    if (idBytesEqual(hySlots[index].tcPeer, msg.from()) &&
-        msg.type() == TYPE_CLIMATE_EVENT) {
-      return handleTcClimate(index, msg);
-    }
 
     if (idBytesEqual(hySlots[index].vdPeer, msg.from())) {
       if (msg.type() == TYPE_RESPONSE && handleVdAckStatus(index, msg)) {
@@ -2413,7 +2453,7 @@ static void serviceRadioDiag() {
 void setup() {
   DINIT(57600, ASKSIN_PLUS_PLUS_IDENTIFIER);
   Serial.begin(57600);
-  Serial.println(F("HY REAL20-VERIFIEDINIT-RXIRQ E46"));
+  Serial.println(F("HY REAL20-TCSHARE-VERIFIEDINIT-RXIRQ E46"));
 #ifdef SIMPLE_CC1101_INIT
   Serial.println(F("SIMPLE_CC1101_INIT=1"));
 #else
