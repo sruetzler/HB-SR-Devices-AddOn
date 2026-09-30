@@ -24,8 +24,8 @@
 //   * Only normal valve positions are hydraulically scaled. Special commands are conservative/transparent.
 //
 // EEPROM / factor semantics:
-//   v25 uses the compact EEPROM layout for all 20 logical HYs.
-//   If the HY25 layout marker is absent, the layout is initialized once.
+//   v26 uses exactly one direct peer per channel (CH1=TC, CH2=VD).
+//   If the HY26 layout marker is absent, all 20 logical HYs are initialized once.
 //   Afterwards all master/direct-peer assignments come exclusively from EEPROM.
 //   Register 0x02 remains "factor":
 //       factor = percentage passed to the real VD
@@ -86,7 +86,7 @@
 #define LED_PIN 4
 #define CONFIG_BUTTON_PIN 8
 
-#define PEERS_PER_CHANNEL 4
+#define PEERS_PER_CHANNEL 1
 #define NUM_CHANNELS 2
 #define LOGICAL_HY_COUNT 20
 
@@ -1109,32 +1109,37 @@ static ConfigDevice* configDevice = nullptr;
 static int8_t configDeviceIndex = -1;
 static bool configDeviceAttached = false;
 
-// Final compact EEPROM layout for all 20 logical HYs.
+// Final EEPROM layout for all 20 logical HYs.
 //
-// AskSin++ uses:
-//   * 4 bytes StorageConfig immediately BEFORE the device base address
-//   * currently 42 bytes from device base up to getUserStorage().getAddress()
+// v26 deliberately allows exactly one direct peer per channel:
+//   CH1 = one TC peer
+//   CH2 = one VD peer
 //
-// Therefore one logical HY needs exactly 46 bytes with the present
-// AskSin++ 5.0.3 / non-AES / 2-channel configuration. The slots are tiled
-// directly without overlap:
+// AskSin++ uses 4 bytes StorageConfig immediately BEFORE the HY1 device
+// base. The persistent ConfigDevice footprint depends on the channel/peer
+// layout and is verified at runtime by configDeviceFootprint().
+//
+// Keep the existing 46-byte slot stride intentionally. v26 uses less peer
+// storage than v25, but retaining the slot bases keeps all 20 virtual device
+// addresses deterministic and leaves generous unused space inside each slot.
+// The slots are tiled without overlap:
 //
 //   HY1  base 0x020
 //   HY2  base 0x04E
 //   ...
 //   HY20 base 0x38A
 //
-// HY20 user-storage start is expected at 0x3B4 (= 948), leaving 72 bytes
-// before the four-byte v25 layout marker at 0x3FC..0x3FF.
+// The actual HY20 user-storage start is checked at runtime and must remain
+// below the four-byte v26 layout marker at 0x3FC..0x3FF.
 static const uint16_t DEVICE_EEPROM_BASE = 0x020;
 static const uint16_t DEVICE_EEPROM_STRIDE = 46;
-static const uint16_t HY25_LAYOUT_MAGIC_ADDR = 0x3FC;
-static const uint8_t HY25_LAYOUT_MAGIC[4] = { 'H','Y','2','5' };
+static const uint16_t HY26_LAYOUT_MAGIC_ADDR = 0x3FC;
+static const uint8_t HY26_LAYOUT_MAGIC[4] = { 'H','Y','2','6' };
 
 static_assert(DEVICE_EEPROM_BASE +
               (uint16_t)LOGICAL_HY_COUNT * DEVICE_EEPROM_STRIDE
-              <= HY25_LAYOUT_MAGIC_ADDR,
-              "20-HY EEPROM slots overlap the v25 layout marker");
+              <= HY26_LAYOUT_MAGIC_ADDR,
+              "20-HY EEPROM slots overlap the v26 layout marker");
 
 Hal hal;
 
@@ -1220,7 +1225,7 @@ static ConfigDevice* activateConfigDevice(uint8_t index, bool attachHal) {
 
 static bool layoutMagicValid() {
   for (uint8_t i = 0; i < 4; ++i) {
-    if (storage().getByte(HY25_LAYOUT_MAGIC_ADDR + i) != HY25_LAYOUT_MAGIC[i]) {
+    if (storage().getByte(HY26_LAYOUT_MAGIC_ADDR + i) != HY26_LAYOUT_MAGIC[i]) {
       return false;
     }
   }
@@ -1229,7 +1234,7 @@ static bool layoutMagicValid() {
 
 static void writeLayoutMagic() {
   for (uint8_t i = 0; i < 4; ++i) {
-    storage().setByte(HY25_LAYOUT_MAGIC_ADDR + i, HY25_LAYOUT_MAGIC[i]);
+    storage().setByte(HY26_LAYOUT_MAGIC_ADDR + i, HY26_LAYOUT_MAGIC[i]);
   }
 }
 
@@ -1252,11 +1257,12 @@ static bool eepromLayoutSafe() {
   ConfigDevice* last = activateConfigDevice(LOGICAL_HY_COUNT - 1U, false);
   if (last == nullptr) return false;
 
-  return last->getUserStorage().getAddress() <= HY25_LAYOUT_MAGIC_ADDR;
+  return last->getUserStorage().getAddress() <= HY26_LAYOUT_MAGIC_ADDR;
 }
 
-// If the v25 layout marker is absent, initialize all 20 logical devices
-// at the compact EEPROM addresses once.
+// If the v26 layout marker is absent, initialize all 20 logical devices
+// at their fixed EEPROM slot addresses once. This intentionally discards old
+// peer assignments; after the v25 -> v26 transition the HYs are paired again.
 static bool ensurePersistentLayout() {
   if (!eepromLayoutSafe()) {
     Serial.println(F("EEP OVR"));
@@ -1267,9 +1273,9 @@ static bool ensurePersistentLayout() {
   // the reusable adapter. Re-activate HY1 before reading its checksum.
   ConfigDevice* d0 = activateConfigDevice(0, false);
   const bool storageFirst = storage().setup(d0->checksum());
-  const bool initV25 = storageFirst || !layoutMagicValid();
+  const bool initV26 = storageFirst || !layoutMagicValid();
 
-  if (initV25) {
+  if (initV26) {
     // HY1 keeps base 0x020, therefore its physical-radio StorageConfig stays
     // at 0x01c..0x01f. Preserve these four bytes when migrating from an
     // existing installation so an RF frequency calibration is not lost.
@@ -1295,7 +1301,7 @@ static bool ensurePersistentLayout() {
     storage().store();
   }
 
-  return initV25;
+  return initV26;
 }
 
 static bool firstPeer(ConfigDevice& d, uint8_t channelNo, uint8_t out[3]) {
@@ -2453,7 +2459,7 @@ static void serviceRadioDiag() {
 void setup() {
   DINIT(57600, ASKSIN_PLUS_PLUS_IDENTIFIER);
   Serial.begin(57600);
-  Serial.println(F("HY REAL20-TCSHARE-VERIFIEDINIT-RXIRQ E46"));
+  Serial.println(F("HY REAL20-TCSHARE-1PEER-VERIFIEDINIT-RXIRQ E46"));
 #ifdef SIMPLE_CC1101_INIT
   Serial.println(F("SIMPLE_CC1101_INIT=1"));
 #else
@@ -2525,7 +2531,7 @@ void setup() {
   }
   buttonISR(cfgBtn, CONFIG_BUTTON_PIN);
 
-  if (first) Serial.println(F("EEP V25"));
+  if (first) Serial.println(F("EEP V26"));
 
   Serial.print(F("MEM "));
   Serial.print(sizeof(HySlot));

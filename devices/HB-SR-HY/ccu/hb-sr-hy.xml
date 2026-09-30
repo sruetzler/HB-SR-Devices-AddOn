@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="iso-8859-1"?>
-<device version="9" rx_modes="ALWAYS" cyclic_timeout="3600">
+<device version="10" rx_modes="ALWAYS" cyclic_timeout="3600">
   <supported_types>
     <type name="HB-SR-HY" id="HB-SR-HY" updatable="true">
       <parameter index="10.0" size="2.0" const_value="0xFE01"/>
@@ -37,7 +37,7 @@
       </paramset>
     </channel>
     
-    <channel index="1" type="CLIMATECONTROL_VENT_DRIVE">
+    <channel index="1" type="CLIMATECONTROL_VENT_DRIVE" max_link_peers="1">
       <link_roles>
         <target name="CLIMATECONTROL_TC"/>
       </link_roles>
@@ -86,7 +86,7 @@
       </paramset>
     </channel>
     
-    <channel index="2" type="CLIMATECONTROL_REGULATOR">
+    <channel index="2" type="CLIMATECONTROL_REGULATOR" max_link_peers="1">
     <link_roles>
         <source name="CLIMATECONTROL_TC"/>
     </link_roles>

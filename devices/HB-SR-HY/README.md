@@ -20,6 +20,10 @@ Die Firmware wurde beim Zusammenführen der Repositories nicht verändert.
 
 ## Konfiguration in der CCU
 
+Pro Kanal ist maximal ein direkter Peer vorgesehen: auf Kanal 1 ein HM-CC-TC,
+auf Kanal 2 ein HM-CC-VD. Die Gerätebeschreibung begrenzt beide Kanäle mit
+`max_link_peers="1"`, passend zu `PEERS_PER_CHANNEL 1` in der Firmware.
+
 Auf Kanal 1:
 
 - `ENABLE`: hydraulische Anpassung aktiv, Standard `true`. Bei `false` gilt ein
