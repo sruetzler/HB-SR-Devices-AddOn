@@ -2374,6 +2374,14 @@ static bool dispatchSharedRadioMessage(Message& msg) {
     return true;
   }
 
+  // A TYPE 0x58 addressed to one of our HY identities must never fall through
+  // to the generic AskSin++ device handler. If its sender is not a configured
+  // TC peer, the climate telegram is deliberately ignored without any ACK.
+  // A configured TC was already consumed by the shared-TC block above.
+  if (addressed >= 0 && msg.type() == TYPE_CLIMATE_EVENT) {
+    return true;
+  }
+
   if (addressed >= 0) {
     uint8_t index = (uint8_t)addressed;
 
@@ -2459,7 +2467,7 @@ static void serviceRadioDiag() {
 void setup() {
   DINIT(57600, ASKSIN_PLUS_PLUS_IDENTIFIER);
   Serial.begin(57600);
-  Serial.println(F("HY REAL20-TCSHARE-1PEER-VERIFIEDINIT-RXIRQ E46"));
+  Serial.println(F("HY REAL20-TCSHARE-1PEER-DROP58-RXIRQ E46"));
 #ifdef SIMPLE_CC1101_INIT
   Serial.println(F("SIMPLE_CC1101_INIT=1"));
 #else
