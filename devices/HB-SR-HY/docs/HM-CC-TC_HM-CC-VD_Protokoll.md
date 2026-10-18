@@ -1,6 +1,6 @@
 # HomeMatic HM-CC-TC ↔ HM-CC-VD – Protokolldokumentation
 
-Stand: 2026-09-16
+Stand: 2026-10-17
 
 ## 1. Scope
 
@@ -955,44 +955,59 @@ Wichtig:
 
 # 19. Mehrere HM-CC-VD an einem TC
 
-Reale Funkmitschnitte zeigen bei einem TC mit mehreren VDs:
+Reale Funkmitschnitte bestätigen, dass ein HM-CC-TC mehrere HM-CC-VD über einen **gemeinsamen globalen Message Counter** und einen **gemeinsamen globalen Timingzyklus** bedient.
+
+Für zwei VDs wurde beispielsweise beim TC `172987` beobachtet:
 
 ```text
-CNT=BA → VD1
-CNT=BB → VD2
-CNT=BC → VD1
-CNT=BD → VD2
+CNT=C8 → VD 10FC23
+CNT=C9 → VD 13A146
+CNT=CA → VD 10FC23
+CNT=CB → VD 13A146
 ...
 ```
 
-Damit ist für einen beobachteten Zwei-VD-Fall sehr gut belegt:
-
-- ein **gemeinsamer globaler TC-Counter**,
-- ein **gemeinsamer globaler Timingzyklus**,
-- pro Slot wird ein VD adressiert,
-- die VDs werden abwechselnd bedient.
-
-Nicht beobachtet wurde:
+Für drei VDs wurde beim TC `187A60` beobachtet:
 
 ```text
-VD1 und VD2 direkt hintereinander mit demselben Slot/Counter
+CNT=D8 → VD 1379E3
+CNT=D9 → VD 20368F
+CNT=DA → VD 193A01
+CNT=DB → VD 1379E3
+CNT=DC → VD 20368F
+CNT=DD → VD 193A01
+...
 ```
+
+Damit ist empirisch belegt:
+
+- ein **gemeinsamer globaler TC-Counter** für alle zugeordneten VDs,
+- ein **gemeinsamer globaler Timingzyklus**,
+- pro globalem Slot wird genau ein VD adressiert,
+- der Counter wird beim Wechsel des Ziel-VD normal weitergezählt,
+- zwei und drei VDs werden zyklisch im Round-Robin bedient.
+
+Nicht beobachtet wurde, dass mehrere VDs innerhalb desselben globalen Slots denselben Counter erhalten.
 
 ## 19.1 Round-Robin
 
-Für zwei VDs ist ein alternierender Ablauf belegt:
+Für zwei und drei VDs ist der zyklische Ablauf damit direkt durch reale Mitschnitte bestätigt:
 
 ```text
+2 VDs:
 VD1 → VD2 → VD1 → VD2 → ...
+
+3 VDs:
+VD1 → VD2 → VD3 → VD1 → VD2 → VD3 → ...
 ```
 
-Für drei oder vier VDs ist:
+Für vier VDs ist ein entsprechender Ablauf:
 
 ```text
-VD1 → VD2 → VD3 → VD4 → VD1 ...
+VD1 → VD2 → VD3 → VD4 → VD1 → ...
 ```
 
-eine sehr plausible Rekonstruktion, aber bislang nicht durch einen entsprechenden vollständigen Mitschnitt bestätigt.
+weiterhin eine sehr plausible Extrapolation, wurde aber bislang nicht mit einem vollständigen Vier-VD-Mitschnitt direkt bestätigt.
 
 ## 19.2 Timing bleibt global
 
@@ -1012,9 +1027,9 @@ Nicht von der Adresse des aktuell ausgewählten VD.
 
 # 20. Synchronisation bei mehreren VDs
 
-Hier ergibt sich eine wichtige Rekonstruktion.
+Hier ergibt sich trotz des inzwischen bestätigten Round-Robin weiterhin eine wichtige Rekonstruktion.
 
-Wenn mehrere VDs existieren, kann der Abstand zwischen zwei an denselben VD adressierten Stelltelegrammen deutlich größer als 184 s werden.
+Bei drei real beobachteten VDs wird ein einzelner VD nur in jedem dritten globalen Slot direkt adressiert. Der Abstand zwischen zwei an denselben VD adressierten Stelltelegrammen kann damit deutlich größer als 184 s werden.
 
 Gleichzeitig benötigt der VD laut Hersteller bei vollständigem Synchronisationsverlust maximal 184 s Dauerempfang, um wieder zu synchronisieren.
 
@@ -1139,6 +1154,8 @@ Die Synchronisation erfolgt:
 
 - automatisch innerhalb einer Stunde,
 - alternativ durch kurzen Tastendruck am VD sofort angestoßen.
+
+Der kurze Tastendruck wurde in den lokalen HY-Tests auch praktisch bestätigt: Nach verlorenem Link-B-Timing und mehreren unbeantworteten Zyklen antwortete der originale VD nach dem ausgelösten Resync wieder auf einen passenden folgenden Zyklus. Die genaue interne Resync-Logik des VD ist damit weiterhin nicht vollständig rekonstruiert.
 
 ---
 
@@ -1425,15 +1442,15 @@ HM-CC-TC                           HM-CC-VD
 - Der originale VD `13E142` wurde über viele Link-B-Zyklen zuverlässig mit der reinen Timingformel **ohne zusätzlichen festen +200-ms-Offset** erreicht.
 - Die lokale HY-Zeitbasis wurde mit `9966/10000` korrigiert; dieser Faktor ist hardwareabhängig und keine Protokollkonstante.
 - Mit verbreiterter CC1101-RX-Bandbreite (`MDMCFG4=0x88`, ca. 203,1 kHz) wurden mindestens 16 aufeinanderfolgende VD-ACKs direkt vom HY korrekt empfangen.
+- Bei mehreren VDs verwendet ein TC einen **globalen Counter** und einen **globalen Timingzyklus**; pro Slot wird genau ein VD bedient.
+- Round-Robin wurde mit zwei VDs (`172987`: `10FC23`, `13A146`) und drei VDs (`187A60`: `1379E3`, `20368F`, `193A01`) praktisch bestätigt.
+- Ein kurzer Tastendruck am originalen VD konnte in einem lokalen Test eine verlorene Funk-Synchronisation praktisch wieder anstoßen.
 
 ## Sehr wahrscheinlich / stark rekonstruiert
 
 - `COMMAND=00` = normaler Refresh.
 - `COMMAND=03` = neuer Stellwert.
 - `COMMAND=02` = explizites VENT_CLOSED/OFF.
-- globaler Counter bei mehreren VDs.
-- ein VD pro globalem Slot.
-- alternierende Bedienung bei zwei VDs.
 - VDs können wahrscheinlich fremdadressierte `0x58` desselben TC für globale Synchronisation mithören.
 
 ---
@@ -1477,7 +1494,7 @@ Folgende Punkte sind noch nicht vollständig geklärt:
 
 ## Mehrere VDs
 
-- Round-Robin für drei oder vier VDs noch nicht direkt mit vollständigem Mitschnitt bestätigt
+- Round-Robin für vier VDs noch nicht direkt mit vollständigem Mitschnitt bestätigt
 
 ---
 
@@ -1770,7 +1787,9 @@ Damit lokal validiert:
 - vom originalen VD gesendete ACK_STATUS-Frames, die bei schmaler RX-Bandbreite vom HY teilweise nicht dekodiert wurden,
 - stabile Link-B-Kommunikation mit `MDMCFG4=0x88` / ca. 203,1 kHz RX-Bandbreite,
 - unterschiedliche bzw. schwankende `FREQEST`-Werte, weshalb keine feste FSCTRL0-Korrektur übernommen wurde,
-- praktische VD-Resynchronisation nach HY-Neustart durch kurzen Tastendruck.
+- praktische VD-Resynchronisation nach HY-Neustart durch kurzen Tastendruck,
+- globaler Counter und Round-Robin bei zwei VDs (`172987`: `C8→10FC23`, `C9→13A146`, `CA→10FC23`, `CB→13A146`),
+- globaler Counter und Round-Robin bei drei VDs (`187A60`: `D8→1379E3`, `D9→20368F`, `DA→193A01`, anschließend `DB/DC/DD` in derselben Reihenfolge).
 
 Diese lokalen Messungen ergänzen die externen Quellen; wo sie nur Verhalten der HY-Emulation statt eines originalen VD belegen, ist dies im Text ausdrücklich gekennzeichnet.
 
