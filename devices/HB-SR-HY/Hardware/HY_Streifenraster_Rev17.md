@@ -1,6 +1,17 @@
-# HY – Streifenrasterlayout Rev. 16
+# HY – Streifenrasterlayout Rev. 17
 
-Rev. 16 ersetzt Rev. 15.
+Rev. 17 ersetzt Rev. 16.
+
+
+## Neu in Rev. 17: CC1101-CSn-Pull-up
+- Zusätzlicher **10-kΩ-Widerstand von +3,3 V nach CSn**.
+- Einbauposition: **A31 ↔ G31**.
+- **A31** liegt direkt auf dem durchgehenden +3,3-V-Bus (Reihe A).
+- **G31** liegt direkt auf dem Netz **ATmega Pin 16 / PB2 / D10 / CC1101 Pin 6 (CSn)**.
+- Es ist **keine zusätzliche Drahtbrücke** erforderlich.
+- Es ist **kein zusätzlicher Kupferschnitt** erforderlich.
+- Zweck: Während AVR-RESET/ISP ist D10 hochohmig. Der Pull-up hält CC1101-CSn sicher HIGH, damit der CC1101 seinen SO/MISO-Ausgang nicht auf den gemeinsamen ISP-MISO-Bus treibt.
+- Praktisch bestätigt: ohne Pull-up wurde u. a. eine falsche Signatur `0x000002` gelesen; mit Pull-up wurde die korrekte ATmega328P-Signatur `0x1e950f` gelesen.
 
 ## Quarzbereich: Masse eine Zeile höher
 - Der lokale GND-Bus liegt jetzt auf **Reihe L, Spalten 1 bis 15**.
@@ -26,6 +37,9 @@ Rev. 16 ersetzt Rev. 15.
 - M3: `C3 / C33 / X3 / X33`.
 
 ## Prüfstatus
+- Pull-up A31 (+3,3 V) ↔ G31 (CSn/D10): **Netze geprüft, korrekt**.
+- M3-Abstand C33: **im Modell ausreichend**.
+- Keine neue Drahtbrücke / kein neuer Kupferschnitt erforderlich.
 - elektrische Netzprüfung: **OK**
 - L-GND-Bus an Haupt-GND: **OK**
 - L15/L16 GND-VCC-Trennung: **OK**
