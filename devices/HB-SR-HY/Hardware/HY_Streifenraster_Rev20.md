@@ -1,7 +1,22 @@
-# HY – Streifenrasterlayout Rev. 17
+# HY – Streifenrasterlayout Rev. 20
 
-Rev. 17 ersetzt Rev. 16.
+Rev. 20 ersetzt die Rev.-18/19-DTR-Entwürfe; Rev. 17 bleibt die elektrische Basis.
 
+
+
+## Neu in Rev. 20: FT232-DTR-Auto-Reset
+- **DTR = U11** und läuft auf Reihe U bis **U13**.
+- **J47 = U13 ↔ W13**; die Brücke sitzt eine Spalte weiter links als in Rev. 19.
+- Der DTR-Zweig läuft auf Reihe W von **W13 bis W16**.
+- **C_DTR = 100 nF zwischen W15 ↔ Y15**.
+- **Y15 = ATmega RESET / Pin 1**.
+- Kupferschnitt direkt rechts neben der Brücke: **U13–U14**.
+- Linke Isolation des W-Segments: **W12–W13**.
+- Rechts übernimmt der bereits vorhandene Schnitt **W16–W17** die Isolation.
+- Deshalb ist kein zusätzlicher **W15–W16**-Schnitt nötig.
+- Der alte Schnitt **U11–U12 entfällt**.
+- Elektrischer Pfad: **DTR U11 → U13 → J47 → W13…W16 → C_DTR → Y15/RESET**.
+- `VCC` und `CTS` des FT232 bleiben unbeschaltet.
 
 ## Neu in Rev. 17: CC1101-CSn-Pull-up
 - Zusätzlicher **10-kΩ-Widerstand von +3,3 V nach CSn**.
@@ -91,6 +106,7 @@ Rev. 17 ersetzt Rev. 16.
 | J37 | B47 → C47 | CC1101 100nF VCC |
 | J38 | U37 → V37 | MCP Cout VOUT |
 | J46 | L3 → M3 | GND-Bus L → Haupt-GND |
+| J47 | U13 → W13 | FT232 DTR auf C_DTR-Eingangssegment |
 
 ## Kupferschnitte
 
@@ -142,9 +158,10 @@ Rev. 17 ersetzt Rev. 16.
 - `R21–R22`
 - `S21–S22`
 - `U10–U11`
-- `U11–U12`
+- `U13–U14`
 - `U36–U37`
 - `V18–V19`
+- `W12–W13`
 - `W16–W17`
 - `W28–W29`
 - `X2–X3`
