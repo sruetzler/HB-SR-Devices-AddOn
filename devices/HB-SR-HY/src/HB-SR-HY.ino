@@ -34,11 +34,14 @@
 //
 // Important scope limitations matching the still-open points in the protocol notes:
 //   * AES/security handshakes for the custom 0x58/0x02 runtime path are not implemented here.
-//   * The exact original VD RX-window width is still an empirical point; cyclic Link-B timing uses no fixed offset.
+//   * The exact original VD RX-window width is still an empirical point; cyclic Link-B timing currently uses no fixed offset.
 //   * A real power cycle still starts a fresh Link-B phase. A soft-watchdog recovery, however, preserves
 //     counter/phase/target/cache in .noinit RAM so the real VD stays synchronized.
-//   * HY does not invent a VD error bit. If no valid VD traffic is seen for ten minutes, HY instead
-//     stops answering Link A so the original TC detects the missing valve exactly as with a lost VD.
+//   * Link A mirrors the real VD status/error flags to the original TC.
+//   * CCU status belongs to the HY itself and therefore never mirrors real-VD error flags;
+//     until HY-specific error codes are defined, HY reports no error to the CCU.
+//   * If no valid VD traffic is seen for ten minutes, HY stops answering Link A so the
+//     original TC detects the missing valve exactly as with a lost VD.
 //   Runtime for ALL 20 HYs is compact/custom. One reusable AskSin++ adapter handles only pairing/config EEPROM.
 //- -----------------------------------------------------------------------------------------------------------------------
 // ci-test=yes board=328p aes=no
@@ -219,15 +222,42 @@ static const uint8_t  CC1101_RX_RECOVERY_POLLS = 100;
 // received TC/VD traffic and the CC1101 RX->TX corner case.
 static const uint16_t CCU_STATUS_RADIO_QUIET_MS = 600;
 
-// Link-B timebase calibration measured on this 8 MHz Pro Mini.
-// A nominal 122500 ms interval took about 122918 ms in real time.
-// Shorten millis()-based Link-B intervals by 0.9966.
-static const uint16_t LINKB_TIME_SCALE_NUM = 9966;
+// Link-B timing on the final HY hardware.
+// The earlier 0.9966 factor compensated the clock error of the 8 MHz Pro Mini
+// test hardware. The final HY uses its own 8 MHz crystal, so Link-B now uses
+// the protocol interval 1:1 in real time.
+static const uint16_t LINKB_TIME_SCALE_NUM = 10000;
 static const uint16_t LINKB_TIME_SCALE_DEN = 10000;
+
+// No additional cyclic offset. The previous HY6 +100 ms phase test is gone.
+static const uint16_t VD_CYCLIC_OFFSET_MS = 0;
+
+// Global Link-B timing correction for all logical HYs.
+// Original HM-CC-TCs were measured a few tens of ppm slower than the ideal
+// interval formula. The successful HY6 experiment used +30 ppm, so every
+// Link-B schedule now uses the same +30 ppm correction.
+static const uint8_t LINKB_TIME_SCALE_PPM = 30;
+
+// The scheduler works in whole milliseconds. Each logical HY therefore keeps
+// its own fractional remainder, while all HYs use exactly the same +30 ppm
+// scale. Separate remainders avoid coupling the rounding of independent
+// Link-B timelines.
+static uint32_t linkBScaleRemainder[LOGICAL_HY_COUNT] = {0};
 
 static uint32_t calibrateLinkBInterval(uint32_t ms) {
   return (ms * (uint32_t)LINKB_TIME_SCALE_NUM)
        / (uint32_t)LINKB_TIME_SCALE_DEN;
+}
+
+static uint32_t calibrateLinkBIntervalForIndex(uint8_t index, uint32_t ms) {
+  uint32_t result = calibrateLinkBInterval(ms);
+
+  // result <= 183750 ms, therefore result * 30 fits in uint32_t.
+  const uint32_t scaled = result * (uint32_t)LINKB_TIME_SCALE_PPM
+                        + linkBScaleRemainder[index];
+  result += scaled / 1000000UL;
+  linkBScaleRemainder[index] = scaled % 1000000UL;
+  return result;
 }
 
 // Link-A timing measured directly on CC1101 GDO0 against a real TC/VD pair.
@@ -1064,6 +1094,7 @@ struct HySlot {
   uint8_t lastSentVdTargetRaw;
   uint8_t linkBCounter;
   uint8_t awaitingVdCounter;
+  uint8_t awaitingVdCommand; // command belonging to awaitingVdCounter
   uint8_t missCount;
   uint8_t collisionDebt;
   uint8_t lastVdPositionRaw;
@@ -1457,7 +1488,7 @@ static void restoreSlotsAfterSoftRestart(uint32_t oldMillis) {
     if (s.flags & HYS_SCHEDULE) {
       int32_t deadline = (int32_t)(s.nextVdBaseMs - oldMillis);
       while (deadline <= (int32_t)now) {
-        deadline += (int32_t)calibrateLinkBInterval(linkBIntervalMs(i, s.linkBCounter));
+        deadline += (int32_t)calibrateLinkBIntervalForIndex(i, linkBIntervalMs(i, s.linkBCounter));
         ++s.linkBCounter;
       }
       s.nextVdBaseMs = (uint32_t)deadline;
@@ -1551,6 +1582,12 @@ static void serviceVdWatchdog(uint8_t index, uint32_t now) {
   if ((s.flags & HYS_VD_LOST) == 0 &&
       (uint32_t)(now - s.lastVdSeenMs) >= VD_COMM_LOST_MS) {
     s.flags |= HYS_VD_LOST;
+
+    // A later VD resync must see CMD_NEW_TARGET again. A plain REFRESH may be
+    // acknowledged while the VD is temporarily in its long resync RX window
+    // without establishing a stable normal-cycle synchronization.
+    s.flags &= ~HYS_LAST_NORMAL;
+
     Serial.print(F("V")); Serial.print(index + 1);
     Serial.println(F(" LOST"));
   }
@@ -1566,6 +1603,7 @@ static void startLinkBScheduleIfNeeded(uint8_t index) {
 
   uint8_t oldSreg = SREG;
   cli();
+  linkBScaleRemainder[index] = 0;
   s.nextVdBaseMs = millis();
   s.flags |= HYS_SCHEDULE;
   SREG = oldSreg;
@@ -1602,7 +1640,7 @@ static void advanceLinkBSlotWithoutTx(uint8_t index) {
   if ((s.flags & HYS_SCHEDULE) == 0) return;
 
   uint8_t counter = s.linkBCounter;
-  uint32_t interval = calibrateLinkBInterval(linkBIntervalMs(index, counter));
+  uint32_t interval = calibrateLinkBIntervalForIndex(index, linkBIntervalMs(index, counter));
   uint32_t next = s.nextVdBaseMs + interval;
 
   uint8_t oldSreg = SREG;
@@ -1627,7 +1665,7 @@ static bool sendLinkBSlot(uint8_t index) {
   const uint8_t command = commandForNextVdSlot(s);
   const uint8_t target = targetForNextVdSlot(s);
   const uint32_t interval =
-      calibrateLinkBInterval(linkBIntervalMs(index, counter));
+      calibrateLinkBIntervalForIndex(index, linkBIntervalMs(index, counter));
   const uint32_t next = s.nextVdBaseMs + interval;
 
   Message out;
@@ -1651,6 +1689,7 @@ static bool sendLinkBSlot(uint8_t index) {
   if (sent) {
     s.vdAckDeadlineMs = millis() + VD_ACK_TIMEOUT_MS;
     s.awaitingVdCounter = counter;
+    s.awaitingVdCommand = command;
     s.flags |= HYS_AWAIT_VD_ACK;
   }
   else {
@@ -1659,7 +1698,13 @@ static bool sendLinkBSlot(uint8_t index) {
   }
 
   if (s.specialMode == HY_NORMAL) {
-    s.flags |= HYS_LAST_NORMAL;
+    // HYS_LAST_NORMAL means "the real VD has ACKed this normal target", not
+    // merely "HY has transmitted it". If CMD_NEW_TARGET is missed because the
+    // VD is asleep/not yet configured, keep sending CMD_NEW_TARGET in later
+    // regular slots until one matching ACK_STATUS confirms it.
+    if (command == CMD_NEW_TARGET) {
+      s.flags &= ~HYS_LAST_NORMAL;
+    }
     s.lastSentVdTargetRaw = target;
   }
   else {
@@ -1720,7 +1765,8 @@ static bool handleAddressedTcClimate(uint8_t index, Message& msg) {
 
   Serial.print(F("T")); Serial.print(index + 1);
   Serial.print(' '); Serial.print(msg.count(), HEX);
-  Serial.print(' '); Serial.println(ackSent ? 1 : 0);
+  Serial.print(' '); Serial.print(ackSent ? 1 : 0);
+  Serial.print(F(" RSSI=-")); Serial.println(requestRssi);
   return true;
 }
 
@@ -1741,6 +1787,10 @@ static bool handleVdAckStatus(uint8_t index, Message& msg) {
   if (msg.type() != TYPE_RESPONSE || msg.length() < 0x0e) return false;
   if (msg.command() != RESPONSE_ACK_STATUS || msg.subcommand() != VD_CHANNEL) return false;
 
+  // RSSI measured by the HY's CC1101 for this real VD -> HY packet.
+  // AskSin++ returns the positive magnitude, so log it as -N dBm.
+  const uint8_t vdRxRssi = hal.radio.rssi();
+
   bool changed = (s.flags & HYS_CACHE_VALID) == 0 ||
                  s.lastVdPositionRaw != msg.data()[0] ||
                  s.lastVdStatus != msg.data()[1];
@@ -1756,6 +1806,13 @@ static bool handleVdAckStatus(uint8_t index, Message& msg) {
 
   if (outstanding) {
     s.flags &= ~HYS_AWAIT_VD_ACK;
+
+    // Only a matching ACK proves that the real VD actually received the
+    // normal NEW_TARGET. This is the synchronization point for Link B.
+    if (s.awaitingVdCommand == CMD_NEW_TARGET) {
+      s.flags |= HYS_LAST_NORMAL;
+    }
+
     if (s.collisionDebt != 0) s.collisionDebt = 0;
   }
 
@@ -1763,7 +1820,8 @@ static bool handleVdAckStatus(uint8_t index, Message& msg) {
 
   Serial.print(F("D")); Serial.print(index + 1);
   Serial.print(' '); Serial.print(msg.count(), HEX);
-  Serial.print(' '); Serial.println(outstanding ? 1 : 0);
+  Serial.print(' '); Serial.print(outstanding ? 1 : 0);
+  Serial.print(F(" RSSI=-")); Serial.println(vdRxRssi);
   return true;
 }
 
@@ -1772,6 +1830,9 @@ static bool handleVdRuntime(uint8_t index, Message& msg) {
   if (!idBytesEqual(s.vdPeer, msg.from()) || msg.type() != TYPE_VALVE_RUNTIME) {
     return false;
   }
+
+  // Capture before any runtime ACK TX changes the radio state.
+  const uint8_t vdRxRssi = hal.radio.rssi();
 
   noteValidVdRx(index);
 
@@ -1785,7 +1846,8 @@ static bool handleVdRuntime(uint8_t index, Message& msg) {
 
   Serial.print(F("X")); Serial.print(index + 1);
   Serial.print(' '); Serial.print(msg.count(), HEX);
-  Serial.print(' '); Serial.println(ack ? 1 : 0);
+  Serial.print(' '); Serial.print(ack ? 1 : 0);
+  Serial.print(F(" RSSI=-")); Serial.println(vdRxRssi);
   return true;
 }
 
@@ -1957,7 +2019,10 @@ static bool queueCcuStatus(uint8_t index) {
     return false;
   }
 
-  SlotStatusView view(tcVisiblePositionRaw(index), s.lastVdStatus);
+  // CCU status describes HY, not the physical VD. Do not leak the VD's
+  // error/status flags into the HB-SR-HY device. HY-specific errors can be
+  // introduced here later; for now the CCU-facing flags are always zero.
+  SlotStatusView view(tcVisiblePositionRaw(index), 0);
   uint8_t count = ++s.ccuCounter;
 
   InfoActuatorStatusMsg& pm = pendingCcuStatusMsg.infoActuatorStatus();
@@ -2007,7 +2072,7 @@ static void setAdapterRuntimeState(uint8_t index, ConfigDevice& d) {
   HySlot& s = hySlots[index];
   d.channel(THERM_CHANNEL).runtimeState(
       (s.flags & HYS_CACHE_VALID) ? tcVisiblePositionRaw(index) : 0,
-      (s.flags & HYS_CACHE_VALID) ? s.lastVdStatus : 0);
+      0); // CCU sees HY's own error flags only; none are defined yet.
   d.channel(VALVE_CHANNEL).runtimeState(0,0);
 }
 
@@ -2467,7 +2532,7 @@ static void serviceRadioDiag() {
 void setup() {
   DINIT(57600, ASKSIN_PLUS_PLUS_IDENTIFIER);
   Serial.begin(57600);
-  Serial.println(F("HY REAL20-TCSHARE-1PEER-DROP58-RXIRQ E46"));
+  Serial.println(F("HY REAL20-TCSHARE-1PEER-DROP58-RXIRQ GLOBAL+30PPM E46A"));
 #ifdef SIMPLE_CC1101_INIT
   Serial.println(F("SIMPLE_CC1101_INIT=1"));
 #else
