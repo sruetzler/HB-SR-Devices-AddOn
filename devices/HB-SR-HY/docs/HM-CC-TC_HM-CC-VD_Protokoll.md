@@ -1,6 +1,6 @@
 # HomeMatic HM-CC-TC ↔ HM-CC-VD – Protokolldokumentation
 
-Stand: 2026-10-17
+Stand: 2026-11-01
 
 ## 1. Scope
 
@@ -667,6 +667,28 @@ das Intervall.
 
 FHEMs optimierte Implementierung bildet entsprechend nur diese beiden Bytes in seinen vorberechneten Timingwerten ab.
 
+## 13.1 Folgerung für HY Link B
+
+Auf Link B tritt HY gegenüber dem realen HM-CC-VD als eigener TC-Sender auf.
+Für die Timingformel ist deshalb **die logische HY-Adresse** maßgeblich, nicht
+die Adresse des ursprünglichen HM-CC-TC auf Link A.
+
+Für HY Nummer `n` gilt entsprechend sinngemäß:
+
+```text
+T = f(HY_ADDRESS[n], LINK_B_COUNTER[n])
+```
+
+Beispiel für HY6:
+
+```text
+Sender auf Link B = FE0106
+Timingadresse      = FE0106
+```
+
+Die Adresse `1A3F0D` des ursprünglichen TC6 ist für den Link-B-Zeitplan des
+mit `FE0106` gepaarten VD6 nicht mehr die Senderadresse.
+
 ---
 
 # 14. Welcher Counter bestimmt das nächste Intervall?
@@ -733,47 +755,85 @@ Damit bestätigt dieser reale Mitschnitt sehr gut, dass **der aktuelle Counter `
 
 Auch ein längerer Mitschnitt mit empfangenen Countern `81` und später `86` war zeitlich mit den dazwischenliegenden berechneten Slots konsistent, obwohl die Zwischenframes am untersuchten Empfänger nicht empfangen wurden.
 
-## 14.2 Lokale HY-Zeitbasis
+## 14.2 Lokale HY-Zeitbasis der finalen HY-Hardware
 
-Bei der aktuellen HY-Hardware mit ATmega328P wurde festgestellt, dass die
-Arduino-`millis()`-Zeitbasis gegenüber der realen Zeit um ungefähr `0,34 %`
-zu langsam läuft.
-
-Beispiel:
+Die frühere Pro-Mini-Testhardware zeigte eine deutliche lokale
+Zeitbasisabweichung und benötigte zeitweise den experimentellen Faktor:
 
 ```text
-Sollintervall: 122500 ms
-lokal ohne Korrektur gemessen: ca. 122918 ms
-Abweichung: ca. +418 ms
+9966 / 10000
 ```
 
-Für genau diesen HY-Aufbau wird deshalb lokal korrigiert mit:
+Dieser Befund gilt **nicht** für die finale HY-Hardware mit ATmega328P und
+externem 8-MHz-Quarz.
+
+Die finale Hardware wurde über identische eingehende TC-Telegramme gleichzeitig
+gegen:
+
+- die lokale HY-Zeitmessung (`micros()`),
+- unabhängige CCU-`multimac`-Zeitstempel
+
+verglichen.
+
+Über den längeren Vergleichslauf ergab sich zwischen HY und CCU nur eine
+Größenordnung von ungefähr:
 
 ```text
-lokales_intervall = protokollintervall * 9966 / 10000
+ca. 2...3 ppm
 ```
 
-Beispiele:
+Beispiel TC6:
 
-| Protokollintervall | lokal verwendeter Wert |
-|---:|---:|
-| 122500 ms | 122083 ms |
-| 172000 ms | 171415 ms |
-| 157500 ms | 156964 ms |
-| 143000 ms | 142513 ms |
-| 128750 ms | 128312 ms |
-| 178250 ms | 177643 ms |
+```text
+CCU: 129.004 s
+HY:  129.004160 s
+```
 
-Nach dieser Korrektur wurden die realen Link-B-Abstände praktisch bis auf
-wenige Millisekunden getroffen.
+Die Differenz beträgt damit nur ungefähr `0,16 ms` auf `129 s`.
 
-Wichtig:
+Folgerung:
 
-> `9966/10000` ist **keine HomeMatic-/BidCoS-Protokollkonstante**.
+> Für die finale HY-Hardware ist keine Korrektur in der Größenordnung
+> `9966/10000` erforderlich.
 
-Der Faktor kompensiert ausschließlich die lokale Zeitbasis der aktuell
-verwendeten HY-Hardware und muss auf anderer Hardware neu bestimmt werden
-oder entfallen.
+Die frühere `9966/10000`-Korrektur war eine Eigenschaft der damaligen
+Testhardware bzw. deren Zeitbasis und keine BidCoS-Konstante.
+
+## 14.3 Reale Original-TCs laufen geringfügig länger als die Idealformel
+
+Ein längerer Mitschnitt mehrerer originaler HM-CC-TC zeigte, dass die realen
+Abstände zwischen zwei aufeinanderfolgenden `0x58`-Telegrammen zwar sehr dicht
+an der rekonstruierten Timingformel liegen, aber systematisch geringfügig
+länger sein können.
+
+Ohne einzelne ungefähr `+100 ms` große Sonderausreißer lagen die typischen
+Abweichungen der untersuchten TCs ungefähr im Bereich:
+
+```text
++13 ... +32 ppm
+```
+
+entsprechend grob:
+
+```text
++2 ... +5 ms
+```
+
+bei typischen Intervallen von etwa 120...180 s.
+
+Für TC6 (`1A3F0D`) wurden beispielsweise wiederholt ungefähr `+30...32 ppm`
+beobachtet.
+
+Diese kleinen Unterschiede sind sehr wahrscheinlich reale Geräte-/Takt-
+toleranzen und **keine individuelle Protokollkonstante pro TC**. Ein originaler
+HM-CC-VD muss mit unterschiedlichen originalen TCs funktionieren und folglich
+eine entsprechende Toleranz besitzen.
+
+Zusätzlich wurden bei mehreren TCs einzelne Intervalle mit ungefähr `+100 ms`
+beobachtet. HY und CCU sahen dabei dieselbe Verzögerung; sie stammt daher nicht
+aus der HY-Zeitmessung. Die genaue Ursache dieser seltenen Sonderverzögerungen
+ist noch offen.
+
 
 ---
 
@@ -796,47 +856,85 @@ zum berechneten Zeitpunkt.
 Dieser Wert ist ein praktischer Implementierungswert von FHEM und keine
 nachgewiesene Protokollkonstante.
 
-## 15.1 Aktuelle praktische Validierung mit dem originalen VD
+## 15.1 Aktuelle praktische Validierung mit originalen VDs
 
-Mit dem originalen HM-CC-VD `13E142` wurde Link B über viele aufeinanderfolgende
-Zyklen mit folgendem Zeitmodell betrieben:
+Ein zusätzlicher **fester** Offset von `+200 ms` ist im aktuellen HY-Aufbau
+nicht erforderlich.
 
-```text
-send(counter=n)
-    ↓
-warte T(TC-ID,n)
-    ↓
-send(counter=n+1)
-```
+Die entscheidende neue Beobachtung ist stattdessen eine sehr kleine
+**proportionale Verlängerung der zyklischen Link-B-Intervalle**.
 
-also ausdrücklich mit:
+Zunächst wurde HY6/VD6 mit der idealen Formel ohne Skalierung betrieben.
+In einem längeren Lauf wurden nur ungefähr:
 
 ```text
-zusätzlicher fester Offset = 0 ms
+68 / 123 = 55,3 %
 ```
 
-Nach Korrektur der lokalen HY-Zeitbasis wurden unter anderem folgende reale
-Abstände beobachtet:
+der tatsächlich gesendeten Link-B-Telegramme vom VD6 bestätigt.
+
+Ein konstanter Phasenversuch mit:
 
 ```text
-CNT 00 → 01: 122499 ms   Soll 122500 ms
-CNT 01 → 02: ca. 172002 ms   Soll 172000 ms
-CNT 02 → 03: ca. 157502 ms   Soll 157500 ms
-CNT 03 → 04: ca. 143002 ms   Soll 143000 ms
-CNT 04 → 05: ca. 128752 ms   Soll 128750 ms
++100 ms
 ```
 
-Der originale VD antwortete bei diesen Sendezeitpunkten zuverlässig.
+brachte keine Verbesserung.
+
+Anschließend wurde ausschließlich die Intervalllänge mit:
+
+```text
+T_HY = T_Formel × 1.000030
+```
+
+also:
+
+```text
++30 ppm
+```
+
+verlängert.
+
+Nach Resynchronisation des VD6 ergab ein mehrstündiger Lauf:
+
+```text
+144 ACKs / 147 gesendete Telegramme
+= 97,96 %
+```
+
+Die Verbesserung stammt damit nicht von einem festen Phasenoffset, sondern von
+der geringfügig längeren laufenden Zeitbasis des zyklischen Sendeplans.
+
+Danach wurde derselbe Faktor **global für alle logischen HYs** verwendet.
+Alle HYs benutzen denselben Faktor; es gibt keine individuelle ppm-Kalibrierung
+pro HY.
+
+Für zehn nach dem Firmwarestart synchronisierte VDs ergab der erste
+Vergleichslauf:
+
+```text
+223 ACKs / 224 gesendete Telegramme
+= 99,55 %
+```
+
+Der einzige Miss lag zeitlich in einem konkurrierenden Funktelegramm und ist
+mit einer normalen Funkkollision vereinbar.
 
 Damit gilt für den aktuell getesteten Aufbau:
 
 ```text
-kein zusätzlicher protokollbedingter +200-ms-Offset erforderlich
+fester Link-B-Offset:       0 ms
+globaler Link-B-Zeitfaktor: +30 ppm
 ```
 
-Der FHEM-Defaultoffset bleibt damit ein FHEM-/Gateway-Implementierungsdetail
-und soll nicht als Eigenschaft des originalen TC↔VD-Protokolls übernommen
-werden.
+Wichtig:
+
+> `+30 ppm` ist derzeit ein empirisch validierter HY-Implementierungswert.
+> Er ist **keine veröffentlichte HomeMatic-/BidCoS-Protokollkonstante**.
+
+Er liegt jedoch in derselben Größenordnung wie die an mehreren originalen TCs
+gemessene geringe Verlängerung gegenüber der idealen Timingformel.
+
 
 ---
 
@@ -850,17 +948,17 @@ Bekannt ist:
 Zeitpunkt des Zyklus = berechenbar
 ```
 
-und für den aktuell getesteten originalen VD praktisch bestätigt ist:
+und für den aktuell getesteten HY-Aufbau praktisch bestätigt ist:
 
 ```text
 berechneter Slot
 +
-korrekte reale Zeitbasis
+globale geringe Intervallskalierung (+30 ppm)
 +
 kein zusätzlicher fester Offset
 ```
 
-trifft das Empfangsfenster zuverlässig.
+trifft das Empfangsfenster der getesteten originalen VDs sehr zuverlässig.
 
 Unbekannt bleibt weiterhin:
 
@@ -1155,7 +1253,31 @@ Die Synchronisation erfolgt:
 - automatisch innerhalb einer Stunde,
 - alternativ durch kurzen Tastendruck am VD sofort angestoßen.
 
-Der kurze Tastendruck wurde in den lokalen HY-Tests auch praktisch bestätigt: Nach verlorenem Link-B-Timing und mehreren unbeantworteten Zyklen antwortete der originale VD nach dem ausgelösten Resync wieder auf einen passenden folgenden Zyklus. Die genaue interne Resync-Logik des VD ist damit weiterhin nicht vollständig rekonstruiert.
+Der kurze Tastendruck wurde in den lokalen HY-Tests praktisch bestätigt:
+Nach verlorenem Link-B-Timing und mehreren unbeantworteten Zyklen antwortete
+der originale VD nach dem ausgelösten Resync wieder auf einen passenden
+folgenden Zyklus.
+
+In einem späteren kontrollierten HY-Neustarttest wurden fünf VDs absichtlich
+**nicht** manuell resynchronisiert. Direkt nach dem Neustart bestätigten sie
+zunächst kein einziges Link-B-Telegramm. Alle fünf fanden die neue Link-B-Phase
+anschließend selbständig wieder.
+
+Der erste erfolgreiche ACK trat ungefähr:
+
+```text
+71 ... 75,5 Minuten
+```
+
+nach dem HY-Start auf. Danach liefen die betroffenen Links wieder überwiegend
+stabil weiter.
+
+Damit ist die automatische Resynchronisation nach einem Neustart des
+TC-Nachbaus nicht mehr nur aus dem Handbuch abgeleitet, sondern im HY-Aufbau
+auch praktisch beobachtet.
+
+Die genaue interne Resync-Logik des VD ist weiterhin nicht vollständig
+rekonstruiert.
 
 ---
 
@@ -1214,28 +1336,85 @@ Ein gültiges Telegramm des bekannten TC reicht daher als plausible Grundlage, u
 
 ## 24.1 Praktische Resynchronisation nach HY-Neustart
 
-In den aktuellen HY-Tests wurde folgender Fall direkt beobachtet:
+Ein HY-Neustart startet Link B mit einer neuen lokalen Zeitphase. Der reale VD
+kann deshalb unmittelbar danach zunächst außerhalb seines normalen
+Empfangsfensters liegen.
 
-1. HY wurde neu gestartet.
-2. Link B begann wieder mit `CNT=00` und einer neuen lokalen Zeitphase.
-3. Der originale VD antwortete über mehrere Link-B-Slots nicht.
-4. Nach kurzem Tastendruck am VD antwortete er wieder auf den folgenden
-   passenden Link-B-Zyklus.
+Zwei Recovery-Wege wurden praktisch beobachtet.
 
-Das bestätigt praktisch, dass ein Neustart des emulierten TC problematisch
-ist, wenn dabei Counter und/oder zeitliche Phase verloren gehen.
+### Manueller Sofort-Resync
 
-Für einen robusten HY gilt daher weiterhin als bevorzugte Strategie:
+Nach mehreren unbeantworteten Link-B-Zyklen konnte ein kurzer Tastendruck am
+VD die Resynchronisation sofort anstoßen. Der VD antwortete anschließend wieder
+auf einen passenden folgenden Zyklus.
+
+### Automatischer Resync ohne Eingriff
+
+In einem späteren Test wurden nach einem HY-Firmwarestart gezielt folgende fünf
+VDs **nicht** manuell synchronisiert:
 
 ```text
-Link-B-Counter + Zeitphase über Neustarts erhalten
+HY3
+HY4
+HY6
+HY9
+HY11
 ```
 
-Wenn das nicht möglich ist, muss mit einer Resynchronisation des originalen
-VD gerechnet werden.
+Direkt nach dem Neustart ergab sich für diese Gruppe zunächst:
 
-Der kurze Tastendruck ist als praktische Resync-Möglichkeit beobachtet; die
-interne Firmwarelogik des VD ist damit nicht vollständig rekonstruiert.
+```text
+0 ACKs / 122 gesendete Telegramme
+```
+
+Die übrigen zehn VDs waren manuell synchronisiert und bestätigten im selben
+Zeitraum:
+
+```text
+223 / 224
+```
+
+gesendete Telegramme.
+
+Ohne weiteren Eingriff synchronisierten sich anschließend **alle fünf**
+unsynchronisierten VDs automatisch. Der erste erfolgreiche ACK lag je nach VD
+ungefähr `71...75,5 Minuten` nach dem HY-Start.
+
+Nach dem ersten erfolgreichen ACK liefen die Links wieder stabil bzw. nahezu
+stabil weiter. Beobachtet wurden unmittelbar danach beispielsweise:
+
+```text
+HY9:  8/8
+HY3:  6/7
+HY4:  7/7
+HY6:  6/6
+HY11: 6/6
+```
+
+Damit ist für den aktuellen Aufbau praktisch bestätigt:
+
+```text
+HY-Neustart
+   ↓
+Link-B-Phase zunächst verloren
+   ↓
+VD antwortet zunächst nicht
+   ↓
+normaler automatischer VD-Resync
+   ↓
+neue HY-Phase wird gefunden
+   ↓
+normaler zyklischer Betrieb
+```
+
+Für HY ist daher **keine zusätzliche Persistenz der exakten Link-B-Phase über
+einen normalen Neustart erforderlich**, solange die vom originalen VD
+vorgesehene automatische Resynchronisation akzeptiert wird.
+
+Eine Soft-Watchdog-Recovery darf vorhandenen Zustand weiterhin erhalten, um
+eine unnötige Resync-Phase zu vermeiden; sie ist aber nicht Voraussetzung für
+die grundsätzliche Wiederherstellung nach einem echten Neustart.
+
 
 ---
 
@@ -1439,8 +1618,11 @@ HM-CC-TC                           HM-CC-VD
 - `TYPE=0x70` wird ungefähr 20 s vor dem zugehörigen `TYPE=0x58` mit demselben Counter gesendet.
 - Bei einem beobachteten fehlenden ACK sendete der originale TC keinen unmittelbaren `A2 58`-Retry, sondern setzte den regulären Counter-/Timingzyklus fort.
 - Für `TC=20209C`, `CNT=CE` wurden berechnet 183.25 s und real ungefähr 183 s bis `CNT=CF` beobachtet; damit ist die Verwendung des aktuellen Counters für das Folgeintervall praktisch bestätigt.
-- Der originale VD `13E142` wurde über viele Link-B-Zyklen zuverlässig mit der reinen Timingformel **ohne zusätzlichen festen +200-ms-Offset** erreicht.
-- Die lokale HY-Zeitbasis wurde mit `9966/10000` korrigiert; dieser Faktor ist hardwareabhängig und keine Protokollkonstante.
+- Ein zusätzlicher fester `+200-ms`-Link-B-Offset ist im aktuellen HY-Aufbau nicht erforderlich.
+- Die finale HY-Hardware mit externem 8-MHz-Quarz weicht gegenüber unabhängigen CCU-Zeitstempeln nur um wenige ppm ab; die frühere `9966/10000`-Korrektur der Pro-Mini-Testhardware ist nicht mehr erforderlich.
+- Mehrere originale TCs zeigten gegenüber der idealen Timingformel typische reale Intervallverlängerungen von ungefähr `+13...+32 ppm`.
+- Eine globale Link-B-Intervallskalierung von `+30 ppm` verbesserte HY6 von ungefähr `55,3 %` auf `97,96 %` ACK-Erfolg und erreichte in einem anschließenden 10-VD-Test `223/224 = 99,55 %`.
+- Nach HY-Neustart synchronisierten sich fünf absichtlich nicht manuell synchronisierte VDs selbständig nach ungefähr `71...75,5 Minuten` wieder auf die neue Link-B-Phase.
 - Mit verbreiterter CC1101-RX-Bandbreite (`MDMCFG4=0x88`, ca. 203,1 kHz) wurden mindestens 16 aufeinanderfolgende VD-ACKs direkt vom HY korrekt empfangen.
 - Bei mehreren VDs verwendet ein TC einen **globalen Counter** und einen **globalen Timingzyklus**; pro Slot wird genau ein VD bedient.
 - Round-Robin wurde mit zwei VDs (`172987`: `10FC23`, `13A146`) und drei VDs (`187A60`: `1379E3`, `20368F`, `193A01`) praktisch bestätigt.
@@ -1474,7 +1656,10 @@ Folgende Punkte sind noch nicht vollständig geklärt:
 - exakte Lage des normalen VD-RX-Fensters
 - exakte Breite des normalen VD-RX-Fensters
 - exakte Breite/Toleranz des TC-Antwortfensters um den gemessenen VD-ACK-Zeitpunkt (~90...95 ms nach Ende des TC-Pakets)
-- genaue historische Motivation des FHEM-Defaultoffsets von `+200 ms`; für den aktuell getesteten originalen VD ist dieser Offset nicht erforderlich
+- genaue Ursache der kleinen systematischen Abweichung originaler TCs von der Idealformel (`ca. +13...+32 ppm`)
+- ob `+30 ppm` der beste allgemeine HY-Nennwert ist oder innerhalb eines kleinen Bereichs weiter optimiert werden sollte; der aktuelle Langzeittest läuft weiter
+- Ursache der selten beobachteten ungefähr `+100-ms`-Verzögerungen einzelner originaler TC-Zyklen
+- genaue historische Motivation des FHEM-Defaultoffsets von `+200 ms`; für den aktuell getesteten HY-Aufbau ist ein solcher fester Offset nicht erforderlich
 
 ## Fehlerfälle
 
@@ -1669,6 +1854,42 @@ untersucht werden.
 
 ---
 
+## 32.6 Globaler Link-B-Zeitfaktor und Phasenverhalten
+
+Die finale HY-Hardware benötigt keine große Korrektur ihrer lokalen MCU-Uhr.
+Trotzdem zeigte sich, dass ein exakt nach der Idealformel laufender Link-B-
+Zeitplan bei einzelnen VDs langfristig ungünstig relativ zu deren
+Empfangsfenster liegen kann.
+
+Der aktuell validierte HY-Ansatz ist:
+
+```text
+T_linkB = T_formel × 1.000030
+```
+
+also eine globale Verlängerung um:
+
+```text
++30 ppm
+```
+
+Der Faktor gilt **für alle logischen HYs gleich**.
+
+Da die 20 logischen Link-B-Zeitachsen unabhängig sind, darf die zur
+Millisekundenrundung verwendete Bruchteil-/Restakkumulation pro Link-B-Zeitachse
+separat geführt werden. Das ist keine individuelle Kalibrierung; der ppm-Faktor
+bleibt für alle identisch.
+
+Ein fester Phasenoffset von `+100 ms` brachte bei HY6 keine Verbesserung.
+Die proportionale Intervallskalierung dagegen erhöhte die ACK-Quote deutlich.
+
+Nach einem echten HY-Neustart ist die bisherige Link-B-Phase zunächst verloren.
+Das muss nicht durch HY-spezifische Persistenz kompensiert werden: Die
+automatische Resynchronisation des originalen HM-CC-VD wurde mit fünf
+absichtlich unsynchronisierten VDs praktisch bestätigt.
+
+---
+
 # 33. Quellen
 
 ## S1 – BidCoS Reverse-Engineering
@@ -1763,7 +1984,7 @@ Relevant für:
 - `0x70` vor `0x58`
 - mehrere VDs / Counterverhalten
 
-## S6 – lokale Messungen und Emulationsvalidierung, September 2026
+## S6 – lokale Messungen und Emulationsvalidierung, September–November 2026
 
 Verwendet wurden:
 
@@ -1783,7 +2004,11 @@ Damit lokal validiert:
 - direkte Übernahme von `ACK_STATUS.POSITION` in die TC-Ventilstellungsanzeige,
 - Positionen 0 %, 15 % und 75 % über `POSITION_RAW / 2`,
 - praktische Link-B-Zeitabstände ohne zusätzlichen festen `+200-ms`-Offset,
-- lokale Zeitbasisabweichung des verwendeten ATmega328P-HY und Korrektur mit `9966/10000`,
+- finale HY-Zeitbasis gegenüber unabhängigen CCU-Zeitstempeln nur wenige ppm abweichend; keine `9966/10000`-Korrektur auf der finalen externen 8-MHz-Quarz-Hardware,
+- originale TC-Intervalle typischerweise geringfügig länger als die Idealformel (`ca. +13...+32 ppm`),
+- HY6-Link-B mit globalem Zeitfaktor `+30 ppm`: Verbesserung von ca. `55,3 %` auf `97,96 %` ACK-Erfolg,
+- globaler `+30-ppm`-Test mit zehn synchronisierten VDs: `223/224 = 99,55 %` ACK-Erfolg,
+- automatische Resynchronisation von fünf absichtlich nicht manuell synchronisierten VDs nach HY-Neustart nach ungefähr `71...75,5 Minuten`,
 - vom originalen VD gesendete ACK_STATUS-Frames, die bei schmaler RX-Bandbreite vom HY teilweise nicht dekodiert wurden,
 - stabile Link-B-Kommunikation mit `MDMCFG4=0x88` / ca. 203,1 kHz RX-Bandbreite,
 - unterschiedliche bzw. schwankende `FREQEST`-Werte, weshalb keine feste FSCTRL0-Korrektur übernommen wurde,
@@ -1893,10 +2118,15 @@ gleicher Counter
 ## HY-Implementierungswerte (nicht Teil des Protokolls)
 
 ```text
-Link-B lokaler Zeitkorrekturfaktor: 9966 / 10000
-zusätzlicher fester Link-B-Offset: 0 ms
-VD-ACK-Empfangsfenster im HY: 300 ms
-CC1101 MDMCFG4: 0x88
-RX-Bandbreite: ca. 203,1 kHz
-FSCTRL0: unverändert
+finale HY-Hardware-Zeitbasis:       keine 9966/10000-Korrektur
+globaler Link-B-Zeitfaktor:         +30 ppm  (= 1.000030)
+individuelle ppm-Werte pro HY:       nein
+zusätzlicher fester Link-B-Offset:   0 ms
+VD-ACK-Empfangsfenster im HY:        300 ms
+CC1101 MDMCFG4:                      0x88
+RX-Bandbreite:                       ca. 203,1 kHz
+FSCTRL0:                             unverändert
 ```
+
+`+30 ppm` ist ein aktuell empirisch validierter HY-Implementierungswert und
+keine veröffentlichte BidCoS-Protokollkonstante.
